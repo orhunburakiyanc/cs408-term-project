@@ -7,7 +7,11 @@ from tkinter import ttk, scrolledtext
 import datetime
 import random
 from queue import Queue, Full
+import ttkbootstrap as ttk
+from ttkbootstrap.scrolled import ScrolledText
+from ttkbootstrap.constants import *
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
@@ -262,46 +266,66 @@ class DroneClient:
                 return False
 
 
+
+
 class DroneGUI:
     """GUI for the drone to display data and status"""
     
     def __init__(self, root):
+        # Initialize with ttkbootstrap style
         self.root = root
         self.root.title("Drone Edge Computing Unit")
         self.root.geometry("1000x800")
         
-        # Create tabbed interface
+        # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
         
         # Create tabs
         self.data_tab = ttk.Frame(self.tab_control)
+        self.charts_tab = ttk.Frame(self.tab_control)
         self.anomaly_tab = ttk.Frame(self.tab_control)
+        self.battery_tab = ttk.Frame(self.tab_control) 
         self.log_tab = ttk.Frame(self.tab_control)
         
         self.tab_control.add(self.data_tab, text="Data Stream")
+        self.tab_control.add(self.charts_tab, text="Charts")
         self.tab_control.add(self.anomaly_tab, text="Anomalies")
+        self.tab_control.add(self.battery_tab, text="Battery Status")
         self.tab_control.add(self.log_tab, text="Logs")
         self.tab_control.pack(expand=1, fill="both")
         
-        # Setting up the data stream tab
+        # Setting up the tabs
         self._setup_data_tab()
-        
-        # Setting up the anomalies tab
+        self._setup_charts_tab()
         self._setup_anomaly_tab()
-        
-        # Setting up the log tab
+        self._setup_battery_tab()
         self._setup_log_tab()
         
-        # Battery info at the bottom of all tabs
+        # Battery info status bar
         self._setup_battery_display()
+        
+        # Data for plotting
+        self.timestamps = []
+        self.temps = []
+        self.humids = []
+        self.battery_levels = []
+        self.battery_timestamps = []
+        
+        # Alert banner for battery status
+        self._setup_alert_banner()
     
     def _setup_data_tab(self):
         # Create a frame for the data table
         table_frame = ttk.Frame(self.data_tab)
         table_frame.pack(padx=10, pady=10, fill="both", expand=True)
         
-        # Create Treeview for sensor data
-        self.data_tree = ttk.Treeview(table_frame, columns=("Sensor ID", "Temperature", "Humidity", "Timestamp"))
+        # Add heading for data table
+        header_label = ttk.Label(table_frame, text="Sensor Data Stream", font=("Helvetica", 12, "bold"))
+        header_label.pack(anchor="w", pady=(0, 10))
+        
+        # Create Treeview for sensor data with bootsyle
+        self.data_tree = ttk.Treeview(table_frame, columns=("Sensor ID", "Temperature", "Humidity", "Timestamp"), 
+                                     bootstyle="info")
         self.data_tree.heading("#0", text="Index")
         self.data_tree.heading("Sensor ID", text="Sensor ID")
         self.data_tree.heading("Temperature", text="Temperature")
@@ -319,38 +343,59 @@ class DroneGUI:
         self.data_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.data_tree.pack(fill="both", expand=True)
-        
+    
+    def _setup_charts_tab(self):
         # Create a frame for graphs
-        graph_frame = ttk.Frame(self.data_tab)
+        graph_frame = ttk.Frame(self.charts_tab)
         graph_frame.pack(padx=10, pady=10, fill="both", expand=True)
         
-        # Create matplotlib figure for visualization
-        self.fig, self.ax = plt.subplots(2, 1, figsize=(10, 6))
+        # Create matplotlib figure with improved styling
+        plt.style.use('ggplot')  # Use ggplot style for better aesthetics
+        
+        # Create figures with more compact and readable layout
+        self.fig = Figure(figsize=(9, 6), dpi=100, tight_layout=True)
+        self.temp_ax = self.fig.add_subplot(2, 1, 1)
+        self.humid_ax = self.fig.add_subplot(2, 1, 2)
+        
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         
-        # Initialize the plots
-        self.temp_line, = self.ax[0].plot([], [], 'r-', label='Temperature')
-        self.humid_line, = self.ax[1].plot([], [], 'b-', label='Humidity')
+        # Initialize the plots with better styling
+        self.temp_line, = self.temp_ax.plot([], [], 'r-', linewidth=2, label='Temperature')
+        self.humid_line, = self.humid_ax.plot([], [], 'b-', linewidth=2, label='Humidity')
         
-        self.ax[0].set_title('Temperature over Time')
-        self.ax[0].set_ylabel('Temperature (°C)')
-        self.ax[0].legend()
+        # Set title and labels with better font
+        self.temp_ax.set_title('Temperature over Time', fontsize=12, pad=10)
+        self.temp_ax.set_ylabel('Temperature (°C)', fontsize=10)
+        self.temp_ax.grid(True, alpha=0.3)
+        self.temp_ax.legend(loc='upper right', frameon=True)
         
-        self.ax[1].set_title('Humidity over Time')
-        self.ax[1].set_xlabel('Time')
-        self.ax[1].set_ylabel('Humidity (%)')
-        self.ax[1].legend()
+        self.humid_ax.set_title('Humidity over Time', fontsize=12, pad=10)
+        self.humid_ax.set_xlabel('Time', fontsize=10)
+        self.humid_ax.set_ylabel('Humidity (%)', fontsize=10)
+        self.humid_ax.grid(True, alpha=0.3)
+        self.humid_ax.legend(loc='upper right', frameon=True)
         
-        # Data for plotting
-        self.timestamps = []
-        self.temps = []
-        self.humids = []
+        # Add zoom/pan toolbar if needed
+        from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+        toolbar_frame = ttk.Frame(graph_frame)
+        toolbar_frame.pack(fill='x')
+        toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+        toolbar.update()
     
     def _setup_anomaly_tab(self):
-        # Create Treeview for anomalies
-        self.anomaly_tree = ttk.Treeview(self.anomaly_tab, 
-                                         columns=("Sensor ID", "Issue", "Value", "Timestamp"))
+        # Frame for anomalies
+        anomaly_frame = ttk.Frame(self.anomaly_tab)
+        anomaly_frame.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        # Add heading for anomalies
+        header_label = ttk.Label(anomaly_frame, text="Detected Anomalies", font=("Helvetica", 12, "bold"))
+        header_label.pack(anchor="w", pady=(0, 10))
+        
+        # Create Treeview for anomalies with warning style
+        self.anomaly_tree = ttk.Treeview(anomaly_frame, 
+                                         columns=("Sensor ID", "Issue", "Value", "Timestamp"),
+                                         bootstyle="danger")
         self.anomaly_tree.heading("#0", text="Index")
         self.anomaly_tree.heading("Sensor ID", text="Sensor ID")
         self.anomaly_tree.heading("Issue", text="Issue")
@@ -364,32 +409,202 @@ class DroneGUI:
         self.anomaly_tree.column("Timestamp", width=200, stretch=tk.YES)
         
         # Add scrollbar to the treeview
-        scrollbar = ttk.Scrollbar(self.anomaly_tab, orient="vertical", command=self.anomaly_tree.yview)
+        scrollbar = ttk.Scrollbar(anomaly_frame, orient="vertical", command=self.anomaly_tree.yview)
         self.anomaly_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        self.anomaly_tree.pack(fill="both", expand=True, padx=10, pady=10)
+        self.anomaly_tree.pack(fill="both", expand=True)
+    
+    def _setup_battery_tab(self):
+        # Main container with padding
+        battery_main_frame = ttk.Frame(self.battery_tab)
+        battery_main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Top section - Current Status with improved style
+        status_frame = ttk.Labelframe(battery_main_frame, text="Current Battery Status", 
+                                     bootstyle="primary")
+        status_frame.pack(fill="x", pady=10)
+        
+        # Battery level indicator - improved visual
+        self.battery_canvas = tk.Canvas(status_frame, width=300, height=40, bg="#f8f9fa", 
+                                       highlightthickness=0)
+        self.battery_canvas.pack(side="top", pady=10)
+        self.draw_battery_indicator(100)
+        
+        # Battery stats display with improved layout
+        stats_frame = ttk.Frame(status_frame)
+        stats_frame.pack(fill="x", pady=10)
+        
+        # Use grid with proper padding
+        ttk.Label(stats_frame, text="Current Level:", font=("Helvetica", 10)).grid(
+            row=0, column=0, sticky="w", padx=10, pady=3)
+        self.battery_level_value = ttk.Label(stats_frame, text="100%", font=("Helvetica", 10, "bold"))
+        self.battery_level_value.grid(row=0, column=1, sticky="w", pady=3)
+        
+        ttk.Label(stats_frame, text="Status:", font=("Helvetica", 10)).grid(
+            row=1, column=0, sticky="w", padx=10, pady=3)
+        self.battery_status_value = ttk.Label(stats_frame, text="Normal Operation", font=("Helvetica", 10, "bold"))
+        self.battery_status_value.grid(row=1, column=1, sticky="w", pady=3)
+        
+        ttk.Label(stats_frame, text="Estimated Runtime:", font=("Helvetica", 10)).grid(
+            row=2, column=0, sticky="w", padx=10, pady=3)
+        self.runtime_value = ttk.Label(stats_frame, text="N/A", font=("Helvetica", 10, "bold"))
+        self.runtime_value.grid(row=2, column=1, sticky="w", pady=3)
+        
+        # Middle section - Battery History Graph with improved design
+        graph_frame = ttk.Labelframe(battery_main_frame, text="Battery Level History", 
+                                    bootstyle="info")
+        graph_frame.pack(fill="both", expand=True, pady=10)
+        
+        # Create more compact and cleaner figure
+        self.battery_fig = Figure(figsize=(8, 3), dpi=100, tight_layout=True)
+        self.battery_ax = self.battery_fig.add_subplot(111)
+        self.battery_canvas_plot = FigureCanvasTkAgg(self.battery_fig, master=graph_frame)
+        self.battery_canvas_plot.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Improved plot styling
+        self.battery_line, = self.battery_ax.plot([], [], color='#28a745', linewidth=2.5)
+        self.battery_ax.set_title('Battery Level over Time', fontsize=12)
+        self.battery_ax.set_ylabel('Battery (%)', fontsize=10)
+        self.battery_ax.set_ylim(0, 100)
+        self.battery_ax.grid(True, alpha=0.3)
+        
+        # Bottom section - Return to Base Simulation with improved style
+        simulation_frame = ttk.Labelframe(battery_main_frame, text="Return to Base Status", 
+                                         bootstyle="warning")
+        simulation_frame.pack(fill="x", pady=10)
+        
+        # Progress bar with bootstyle
+        self.return_progress = ttk.Progressbar(simulation_frame, orient="horizontal", 
+                                              length=300, mode="determinate", 
+                                              bootstyle="success-striped")
+        self.return_progress.pack(pady=10)
+        
+        self.return_status = ttk.Label(simulation_frame, text="Not returning to base", 
+                                      font=("Helvetica", 10))
+        self.return_status.pack(pady=5)
+    
+    def draw_battery_indicator(self, level):
+        """Draw a graphical battery indicator with improved design"""
+        # Clear previous drawing
+        self.battery_canvas.delete("all")
+        
+        # Create rounded rectangle function
+        def create_rounded_rect(canvas, x1, y1, x2, y2, radius=10, **kwargs):
+            points = [
+                x1+radius, y1,
+                x2-radius, y1,
+                x2, y1,
+                x2, y1+radius,
+                x2, y2-radius,
+                x2, y2,
+                x2-radius, y2,
+                x1+radius, y2,
+                x1, y2,
+                x1, y2-radius,
+                x1, y1+radius,
+                x1, y1
+            ]
+            return canvas.create_polygon(points, **kwargs, smooth=True)
+        
+        # Background rectangle (rounded)
+        create_rounded_rect(self.battery_canvas, 10, 5, 280, 35, radius=8, 
+                           outline="#dee2e6", fill="#f8f9fa", width=2)
+        
+        # Draw battery terminal
+        self.battery_canvas.create_rectangle(280, 12, 290, 28, outline="#dee2e6", fill="#dee2e6")
+        
+        # Calculate fill width based on level
+        fill_width = max(0, min(level, 100)) * 2.7  # Scale to fit
+        
+        # Choose color based on level
+        if level <= 20:
+            color = "#dc3545"  # Bootstrap danger color
+        elif level <= 50:
+            color = "#ffc107"  # Bootstrap warning color
+        else:
+            color = "#28a745"  # Bootstrap success color
+        
+        # Draw battery level with rounded corners if not full
+        if fill_width < 270:
+            create_rounded_rect(self.battery_canvas, 10, 5, 10 + fill_width, 35, radius=8, 
+                              outline="", fill=color)
+        else:
+            create_rounded_rect(self.battery_canvas, 10, 5, 280, 35, radius=8, 
+                              outline="", fill=color)
+        
+        # Add percentage text
+        self.battery_canvas.create_text(150, 20, text=f"{level:.1f}%", 
+                                       font=("Helvetica", 12, "bold"), 
+                                       fill="#212529")  # Dark text for contrast
     
     def _setup_log_tab(self):
-        # Create scrolled text widget for logs
-        self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD)
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
+        # Create frame for log section
+        log_frame = ttk.Frame(self.log_tab)
+        log_frame.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        # Add heading
+        header_label = ttk.Label(log_frame, text="System Logs", font=("Helvetica", 12, "bold"))
+        header_label.pack(anchor="w", pady=(0, 10))
+        
+        # Create scrolled text widget with bootstyle
+        self.log_text = ScrolledText(log_frame, bootstyle="dark", autohide=True, wrap="word")
+        self.log_text.pack(fill="both", expand=True)
     
     def _setup_battery_display(self):
-        # Create status bar at the bottom
-        status_frame = ttk.Frame(self.root)
+        # Create status bar at the bottom with improved style
+        status_frame = ttk.Frame(self.root, bootstyle="light")
         status_frame.pack(side="bottom", fill="x")
         
-        # Battery label
-        self.battery_label = ttk.Label(status_frame, text="Battery: 100%")
-        self.battery_label.pack(side="left", padx=10)
+        # Add separator for cleaner look
+        ttk.Separator(status_frame, orient="horizontal").pack(fill="x", pady=2)
+        
+        # Status bar content frame
+        content_frame = ttk.Frame(status_frame)
+        content_frame.pack(fill="x", pady=5)
+        
+        # Battery label with icon
+        battery_frame = ttk.Frame(content_frame)
+        battery_frame.pack(side="left", padx=10)
+        
+        battery_icon = "🔋"  # Simple battery icon
+        ttk.Label(battery_frame, text=battery_icon, font=("Helvetica", 12)).pack(side="left")
+        
+        self.battery_label = ttk.Label(battery_frame, text="100%", font=("Helvetica", 10, "bold"))
+        self.battery_label.pack(side="left", padx=5)
         
         # Battery status label
-        self.battery_status = ttk.Label(status_frame, text="Status: Normal Operation")
+        self.battery_status = ttk.Label(content_frame, text="Status: Normal Operation", 
+                                       font=("Helvetica", 10))
         self.battery_status.pack(side="left", padx=10)
         
-        # Connection status
-        self.connection_status = ttk.Label(status_frame, text="Server: Disconnected")
-        self.connection_status.pack(side="right", padx=10)
+        # Connection status with icon
+        conn_frame = ttk.Frame(content_frame)
+        conn_frame.pack(side="right", padx=10)
+        
+        conn_icon = "🔌"  # Simple plug icon
+        ttk.Label(conn_frame, text=conn_icon, font=("Helvetica", 12)).pack(side="left")
+        
+        self.connection_status = ttk.Label(conn_frame, text="Disconnected", 
+                                          font=("Helvetica", 10))
+        self.connection_status.pack(side="left", padx=5)
+    
+    def _setup_alert_banner(self):
+        """Create a hidden alert banner for battery warnings with improved style"""
+        self.alert_frame = ttk.Frame(self.root, bootstyle="danger")
+        self.alert_label = ttk.Label(self.alert_frame, text="", 
+                                    bootstyle="inverse-danger",
+                                    font=("Helvetica", 12, "bold"))
+        self.alert_label.pack(fill="both", expand=True, padx=10, pady=5)
+        # Alert is hidden by default
+    
+    def show_alert(self, message):
+        """Show the alert banner with a message"""
+        self.alert_label.config(text=message)
+        self.alert_frame.pack(fill="x", before=self.tab_control)
+    
+    def hide_alert(self):
+        """Hide the alert banner"""
+        self.alert_frame.pack_forget()
     
     def update_table(self, sensor_data):
         """Update the data table with new sensor data"""
@@ -417,34 +632,44 @@ class DroneGUI:
         self.temps.append(sensor_data["temperature"])
         self.humids.append(sensor_data["humidity"])
         
-        # Keep only the last 50 data points for plotting
-        if len(self.timestamps) > 50:
-            self.timestamps = self.timestamps[-50:]
-            self.temps = self.temps[-50:]
-            self.humids = self.humids[-50:]
+        # Keep only the last 30 data points for cleaner plotting
+        if len(self.timestamps) > 30:
+            self.timestamps = self.timestamps[-30:]
+            self.temps = self.temps[-30:]
+            self.humids = self.humids[-30:]
         
         # Update the plot
         self._update_plot()
     
     def _update_plot(self):
-        """Update the temperature and humidity plots"""
+        """Update the temperature and humidity plots with improved formatting"""
         if not self.timestamps:
             return
         
         # Update temperature plot
         self.temp_line.set_data(range(len(self.timestamps)), self.temps)
-        self.ax[0].relim()
-        self.ax[0].autoscale_view()
-        self.ax[0].set_xticks(range(len(self.timestamps))[::max(1, len(self.timestamps)//5)])
-        self.ax[0].set_xticklabels([self.timestamps[i] for i in range(0, len(self.timestamps), max(1, len(self.timestamps)//5))], rotation=45)
+        self.temp_ax.relim()
+        self.temp_ax.autoscale_view()
+        
+        # Improved x-ticks - show fewer labels for cleaner look
+        n_ticks = min(5, len(self.timestamps))
+        if n_ticks > 0:
+            step = max(1, len(self.timestamps) // n_ticks)
+            tick_indices = range(0, len(self.timestamps), step)
+            self.temp_ax.set_xticks(tick_indices)
+            self.temp_ax.set_xticklabels([self.timestamps[i] for i in tick_indices], rotation=30)
         
         # Update humidity plot
         self.humid_line.set_data(range(len(self.timestamps)), self.humids)
-        self.ax[1].relim()
-        self.ax[1].autoscale_view()
-        self.ax[1].set_xticks(range(len(self.timestamps))[::max(1, len(self.timestamps)//5)])
-        self.ax[1].set_xticklabels([self.timestamps[i] for i in range(0, len(self.timestamps), max(1, len(self.timestamps)//5))], rotation=45)
+        self.humid_ax.relim()
+        self.humid_ax.autoscale_view()
         
+        # Improved x-ticks for humidity plot
+        if n_ticks > 0:
+            self.humid_ax.set_xticks(tick_indices)
+            self.humid_ax.set_xticklabels([self.timestamps[i] for i in tick_indices], rotation=30)
+        
+        # Update display
         self.fig.tight_layout()
         self.canvas.draw()
     
@@ -465,50 +690,186 @@ class DroneGUI:
     def display_battery(self, battery_status):
         """Update the battery display"""
         level = battery_status["level"]
-        self.battery_label.config(text=f"Battery: {level:.1f}%")
+        current_time = datetime.datetime.now().strftime("%H:%M:%S")
         
-        # Change color based on level
+        # Update status bar at bottom
+        self.battery_label.config(text=f"{level:.1f}%")
+        
+        # Update status based on level - use bootstyle constants
         if level < 20:
-            self.battery_label.config(foreground="red")
+            self.battery_label.config(bootstyle="danger")
         elif level < 50:
-            self.battery_label.config(foreground="orange")
+            self.battery_label.config(bootstyle="warning")
         else:
-            self.battery_label.config(foreground="green")
+            self.battery_label.config(bootstyle="success")
         
-        # Update status text
+        # Update battery tab - always show the actual battery level
+        self.draw_battery_indicator(level)
+        self.battery_level_value.config(text=f"{level:.1f}%")
+        
+        # Update battery history data
+        self.battery_levels.append(level)
+        self.battery_timestamps.append(current_time)
+        
+        # Keep only last 30 points for cleaner display
+        if len(self.battery_levels) > 30:
+            self.battery_levels = self.battery_levels[-30:]
+            self.battery_timestamps = self.battery_timestamps[-30:]
+        
+        # Update battery history plot
+        self._update_battery_plot()
+        
+        # Calculate estimated runtime
+        if not battery_status["returning_to_base"] and not battery_status["charging"]:
+            if len(self.battery_levels) >= 2:
+                # Simple linear projection
+                rate_of_change = (self.battery_levels[-1] - self.battery_levels[0]) / len(self.battery_levels)
+                if rate_of_change < 0:  # If battery is decreasing
+                    time_remaining = abs(level / rate_of_change) if rate_of_change != 0 else float('inf')
+                    minutes = int(time_remaining // 60)
+                    seconds = int(time_remaining % 60)
+                    self.runtime_value.config(text=f"{minutes}m {seconds}s")
+                else:
+                    self.runtime_value.config(text="N/A")
+            else:
+                self.runtime_value.config(text="Calculating...")
+        else:
+            self.runtime_value.config(text="N/A")
+        
+        # Update status text and return to base progress with better styling
         if battery_status["returning_to_base"]:
             if battery_status["charging"]:
                 # Display charging status with time left
-                if "charge_time_left" in battery_status:
+                status_text = "Charging at Base"
+                self.battery_status.config(text=status_text, bootstyle="warning")
+                self.battery_status_value.config(text=status_text, bootstyle="warning")
+                
+                # Make sure to use the dedicated charging progress field, not battery level
+                if "charge_time_left" in battery_status and "charge_progress" in battery_status:
                     time_left = battery_status["charge_time_left"]
-                    status_text = f"Status: Charging at Base ({time_left:.1f}s remaining)"
+                    charge_percent = battery_status["charge_progress"]
+                    
+                    # Configure progress bar for charging progress display
+                    self.return_progress.configure(bootstyle="warning-striped")
+                    self.return_progress["value"] = charge_percent
+                    
+                    # Show charging progress separate from battery level
+                    self.return_status.config(
+                        text=f"Charging process: {charge_percent:.1f}% complete ({time_left:.1f}s remaining)"
+                    )
                 else:
-                    status_text = "Status: Charging at Base"
+                    # Default if we don't have charging progress info
+                    self.return_progress.configure(bootstyle="warning-striped")
+                    self.return_progress["value"] = 0
+                    self.return_status.config(text="Charging in progress... (awaiting data)")
+                
+                # Show alert for charging
+                self.show_alert("⚡ CHARGING AT BASE ⚡")
+                self.alert_frame.configure(bootstyle="warning")
+                self.alert_label.configure(bootstyle="inverse-warning")
+                
             else:
                 # Display returning to base status with progress
-                if "return_time_left" in battery_status:
+                status_text = "Returning to Base"
+                self.battery_status.config(text=status_text, bootstyle="danger")
+                self.battery_status_value.config(text=status_text, bootstyle="danger")
+                
+                # Use return progress data if available
+                if "return_time_left" in battery_status and "return_progress" in battery_status:
                     time_left = battery_status["return_time_left"]
-                    status_text = f"Status: Returning to Base ({time_left:.1f}s remaining)"
+                    return_percent = battery_status["return_progress"]
+                    
+                    # Configure progress bar for return journey display
+                    self.return_progress.configure(bootstyle="danger-striped")
+                    self.return_progress["value"] = return_percent
+                    
+                    self.return_status.config(
+                        text=f"Return journey: {return_percent:.1f}% complete ({time_left:.1f}s remaining)"
+                    )
                 else:
-                    status_text = "Status: Returning to Base"
-            self.battery_status.config(text=status_text, foreground="orange")
+                    # Default if we don't have return progress info
+                    self.return_progress.configure(bootstyle="danger-striped")
+                    self.return_progress["value"] = 0
+                    self.return_status.config(text="Returning to base... (awaiting data)")
+                
+                # Show alert for returning
+                self.show_alert("🔋 LOW BATTERY - RETURNING TO BASE 🔋")
+                self.alert_frame.configure(bootstyle="danger")
+                self.alert_label.configure(bootstyle="inverse-danger")
+            
         else:
-            self.battery_status.config(text="Status: Normal Operation", foreground="green")
+            # Normal operation status
+            status_text = "Normal Operation"
+            self.battery_status.config(text=status_text, bootstyle="success")
+            self.battery_status_value.config(text=status_text, bootstyle="success")
+            
+            # Reset progress bar in normal operation
+            self.return_progress.configure(bootstyle="success-striped")
+            self.return_progress["value"] = 0
+            self.return_status.config(text="Not returning to base")
+            
+            # Hide alert in normal operation
+            self.hide_alert()
+    
+    def _update_battery_plot(self):
+        """Update the battery history plot with improved styling"""
+        if not self.battery_levels:
+            return
+        
+        # Update data
+        self.battery_line.set_data(range(len(self.battery_levels)), self.battery_levels)
+        self.battery_ax.relim()
+        self.battery_ax.autoscale_view()
+        
+        # Set x-ticks - fewer labels for cleaner appearance
+        n_ticks = min(5, len(self.battery_timestamps))
+        if n_ticks > 0:
+            step = max(1, len(self.battery_timestamps) // n_ticks)
+            tick_indices = range(0, len(self.battery_timestamps), step)
+            self.battery_ax.set_xticks(tick_indices)
+            self.battery_ax.set_xticklabels([self.battery_timestamps[i] for i in tick_indices], rotation=30)
+        
+        # Set y range from 0 to max of 100 or slightly above current max
+        y_max = max(100, max(self.battery_levels) * 1.1) if self.battery_levels else 100
+        self.battery_ax.set_ylim(0, y_max)
+        
+        # Add threshold line with improved styling
+        if not hasattr(self, 'threshold_line'):
+            self.threshold_line = self.battery_ax.axhline(y=20, color='#dc3545', linestyle='--', 
+                                                        alpha=0.7, linewidth=1.5)
+        
+        # Update layout and display
+        self.battery_fig.tight_layout()
+        self.battery_canvas_plot.draw()
     
     def update_connection_status(self, connected):
         """Update the server connection status"""
         if connected:
-            self.connection_status.config(text="Server: Connected", foreground="green")
+            self.connection_status.config(text="Connected", bootstyle="success")
         else:
-            self.connection_status.config(text="Server: Disconnected", foreground="red")
+            self.connection_status.config(text="Disconnected", bootstyle="danger")
     
     def log_panel(self, message):
         """Add a message to the log panel"""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Color-code log messages by type
+        if "ERROR" in message:
+            tag = "error"
+            self.log_text.tag_configure("error", foreground="#dc3545")
+        elif "WARNING" in message:
+            tag = "warning"
+            self.log_text.tag_configure("warning", foreground="#ffc107")
+        elif "SUCCESS" in message:
+            tag = "success"
+            self.log_text.tag_configure("success", foreground="#28a745")
+        else:
+            tag = None
+        
+        # Add formatted log entry
         log_entry = f"[{timestamp}] {message}\n"
-        self.log_text.insert(tk.END, log_entry)
+        self.log_text.insert(tk.END, log_entry, tag)
         self.log_text.see(tk.END)  # Auto-scroll to the latest log
-
 
 class DroneServer:
     """Main drone server class that manages sensor connections, data processing, and server communication"""
