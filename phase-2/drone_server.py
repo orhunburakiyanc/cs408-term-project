@@ -42,8 +42,7 @@ class EdgeProcessor:
             self.readings[sensor_id].append(sensor_data)
             
             # Keep only the last window_size readings
-            if len(self.readings[sensor_id]) > self.window_size:
-                self.readings[sensor_id] = self.readings[sensor_id][-self.window_size:]
+            
             
             # Check for anomalies
             self._check_anomalies(sensor_data)
@@ -279,12 +278,14 @@ class DroneGUI:
         
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
+        self.blocked_nodes = set()
         
         # Create tabs
         self.data_tab = ttk.Frame(self.tab_control)
         self.charts_tab = ttk.Frame(self.tab_control)
         self.anomaly_tab = ttk.Frame(self.tab_control)
-        self.battery_tab = ttk.Frame(self.tab_control) 
+        self.battery_tab = ttk.Frame(self.tab_control)
+        self.nodes_tab = ttk.Frame(self.tab_control) 
         self.log_tab = ttk.Frame(self.tab_control)
         
         self.tab_control.add(self.data_tab, text="Data Stream")
@@ -292,6 +293,7 @@ class DroneGUI:
         self.tab_control.add(self.anomaly_tab, text="Anomalies")
         self.tab_control.add(self.battery_tab, text="Battery Status")
         self.tab_control.add(self.log_tab, text="Logs")
+        self.tab_control.add(self.nodes_tab, text="Nodes Status") 
         self.tab_control.pack(expand=1, fill="both")
         
         # Setting up the tabs
@@ -300,6 +302,7 @@ class DroneGUI:
         self._setup_anomaly_tab()
         self._setup_battery_tab()
         self._setup_log_tab()
+        self._setup_nodes_tab()
         
         # Battery info status bar
         self._setup_battery_display()
@@ -313,6 +316,154 @@ class DroneGUI:
         
         # Alert banner for battery status
         self._setup_alert_banner()
+
+    def _setup_nodes_tab(self):
+        """Setup the nodes status tab in the GUI"""
+    # Main container frame
+        nodes_frame = ttk.Frame(self.nodes_tab)
+        nodes_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Create a left and right panel using paned window
+        paned = ttk.PanedWindow(nodes_frame, orient="horizontal")
+        paned.pack(fill="both", expand=True)
+    
+    # Left panel - Nodes list
+        left_frame = ttk.LabelFrame(paned, text="Connected Sensor Nodes", bootstyle="info")
+    
+    # Create treeview for nodes list with bootstyle
+        self.nodes_tree = ttk.Treeview(left_frame, columns=("Status", "Last Seen"), 
+                                  bootstyle="info")
+        self.nodes_tree.heading("#0", text="Sensor ID")
+        self.nodes_tree.heading("Status", text="Status")
+        self.nodes_tree.heading("Last Seen", text="Last Seen")
+    
+        self.nodes_tree.column("#0", width=120, stretch=tk.YES)
+        self.nodes_tree.column("Status", width=80, stretch=tk.YES)
+        self.nodes_tree.column("Last Seen", width=150, stretch=tk.YES)
+    
+    # Add scrollbar
+        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.nodes_tree.yview)
+        self.nodes_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.nodes_tree.pack(side="left", fill="both", expand=True)
+    
+    # Add nodes tree to paned window
+        paned.add(left_frame, weight=1)
+    
+    # Right panel - Node details and actions
+        right_frame = ttk.Frame(paned)
+        right_frame.pack(fill="both", expand=True)
+        paned.add(right_frame, weight=2)
+    
+    # Node details section
+        details_frame = ttk.LabelFrame(right_frame, text="Node Details", bootstyle="primary")
+        details_frame.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    # Details grid
+        details_grid = ttk.Frame(details_frame)
+        details_grid.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Node ID
+        ttk.Label(details_grid, text="Node ID:", font=("Helvetica", 10, "bold")).grid(
+            row=0, column=0, sticky="w", padx=5, pady=5)
+        self.node_id_value = ttk.Label(details_grid, text="Select a node", font=("Helvetica", 10))
+        self.node_id_value.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    
+    # Connection status
+        ttk.Label(details_grid, text="Connection:", font=("Helvetica", 10, "bold")).grid(
+            row=1, column=0, sticky="w", padx=5, pady=5)
+        self.node_status_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_status_value.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+    
+    # Last seen
+        ttk.Label(details_grid, text="Last Activity:", font=("Helvetica", 10, "bold")).grid(
+        row=2, column=0, sticky="w", padx=5, pady=5)
+        self.node_lastseen_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_lastseen_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+    
+    # Data statistics
+        ttk.Label(details_grid, text="Data Count:", font=("Helvetica", 10, "bold")).grid(
+        row=3, column=0, sticky="w", padx=5, pady=5)
+        self.node_datacount_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_datacount_value.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+    
+    # Temperature range
+        ttk.Label(details_grid, text="Temp Range:", font=("Helvetica", 10, "bold")).grid(
+        row=4, column=0, sticky="w", padx=5, pady=5)
+        self.node_temprange_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_temprange_value.grid(row=4, column=1, sticky="w", padx=5, pady=5)
+    
+    # Humidity range
+        ttk.Label(details_grid, text="Humidity Range:", font=("Helvetica", 10, "bold")).grid(
+        row=5, column=0, sticky="w", padx=5, pady=5)
+        self.node_humidrange_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_humidrange_value.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+    
+    # Anomaly count
+        tk.Label(details_grid, text="Anomalies:", font=("Helvetica", 10, "bold")).grid(
+        row=6, column=0, sticky="w", padx=5, pady=5)
+        self.node_anomalies_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_anomalies_value.grid(row=6, column=1, sticky="w", padx=5, pady=5)
+    
+    # Latest reading section
+        latest_frame = ttk.LabelFrame(right_frame, text="Latest Reading", bootstyle="success")
+        latest_frame.pack(fill="x", padx=5, pady=5)
+    
+        latest_grid = ttk.Frame(latest_frame)
+        latest_grid.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Temperature
+        ttk.Label(latest_grid, text="Temperature:", font=("Helvetica", 10, "bold")).grid(
+        row=0, column=0, sticky="w", padx=5, pady=5)
+        self.latest_temp_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_temp_value.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    
+    # Humidity
+        ttk.Label(latest_grid, text="Humidity:", font=("Helvetica", 10, "bold")).grid(
+        row=1, column=0, sticky="w", padx=5, pady=5)
+        self.latest_humid_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_humid_value.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+    
+    # Timestamp
+        ttk.Label(latest_grid, text="Timestamp:", font=("Helvetica", 10, "bold")).grid(
+        row=2, column=0, sticky="w", padx=5, pady=5)
+        self.latest_time_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_time_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+    
+    # Action buttons section
+        action_frame = ttk.LabelFrame(right_frame, text="Actions", bootstyle="warning")
+        action_frame.pack(fill="x", padx=5, pady=5)
+    
+    # Action buttons
+        button_frame = ttk.Frame(action_frame)
+        button_frame.pack(fill="x", padx=10, pady=10)
+    
+    # Disconnect button
+        self.disconnect_btn = ttk.Button(button_frame, text="Disconnect Node", 
+                                   bootstyle="danger", state="disabled",
+                                   command=self.disconnect_selected_node)
+        self.disconnect_btn.pack(side="left", padx=5)
+    
+    # Refresh button
+        self.refresh_btn = ttk.Button(button_frame, text="Refresh Nodes", 
+                                bootstyle="info", command=self.refresh_nodes)
+        self.refresh_btn.pack(side="left", padx=5)
+    
+    # Clear selection button
+        self.clear_btn = ttk.Button(button_frame, text="Clear Selection", 
+                              bootstyle="secondary", state="disabled",
+                              command=self.clear_node_selection)
+        self.clear_btn.pack(side="left", padx=5)
+    
+    # Bind treeview selection event
+        self.nodes_tree.bind("<<TreeviewSelect>>", self.on_node_selected)
+    
+    # Initialize node data storage
+        self.node_data = {}  # Dictionary to store node data and statistics
+    
+    # Store reference to connection_manager and edge_processor (to be set later)
+        self.connection_manager = None
+        self.edge_processor = None
     
     def _setup_data_tab(self):
         # Create a frame for the data table
@@ -871,6 +1022,230 @@ class DroneGUI:
         self.log_text.insert(tk.END, log_entry, tag)
         self.log_text.see(tk.END)  # Auto-scroll to the latest log
 
+    # Add these helper methods to DroneGUI class
+
+    def set_connection_manager(self, connection_manager, edge_processor):
+        """Set the connection manager for node operations"""
+        self.connection_manager = connection_manager
+        self.edge_processor = edge_processor
+
+    def on_node_selected(self, event):
+        """Handle node selection in the treeview"""
+        selection = self.nodes_tree.selection()
+        if selection:
+        # Enable buttons when a node is selected
+            self.disconnect_btn.config(state="normal")
+            self.clear_btn.config(state="normal")
+        
+        # Get selected node ID
+            node_id = self.nodes_tree.item(selection[0], "text")
+        
+        # Update details panel
+            self.update_node_details(node_id)
+        else:
+        # Disable buttons when no node is selected
+            self.disconnect_btn.config(state="disabled")
+            self.clear_btn.config(state="disabled")
+
+    def update_node_details(self, node_id):
+        """Update the node details panel for selected node"""
+        if node_id not in self.node_data:
+            self.node_id_value.config(text=node_id)
+            self.node_status_value.config(text="Unknown")
+            return
+    
+    # Get node data
+        node_info = self.node_data[node_id]
+    
+    # Update labels
+        self.node_id_value.config(text=node_id)
+        self.node_status_value.config(text=node_info.get("status", "Unknown"))
+        self.node_lastseen_value.config(text=node_info.get("last_seen", "N/A"))
+        self.node_datacount_value.config(text=str(node_info.get("data_count", 0)))
+    
+    # Calculate temperature range
+        if "min_temp" in node_info and "max_temp" in node_info:
+            temp_range = f"{node_info['min_temp']:.1f}°C - {node_info['max_temp']:.1f}°C"
+            self.node_temprange_value.config(text=temp_range)
+    
+    # Calculate humidity range
+        if "min_humid" in node_info and "max_humid" in node_info:
+            humid_range = f"{node_info['min_humid']:.1f}% - {node_info['max_humid']:.1f}%"
+            self.node_humidrange_value.config(text=humid_range)
+    
+    # Count anomalies for this node
+        anomaly_count = 0
+        for anomaly in self.edge_processor.get_anomalies():
+            if anomaly["sensor_id"] == node_id:
+                anomaly_count += 1
+        self.node_anomalies_value.config(text=str(anomaly_count))
+    
+    # Latest reading
+        if "latest_reading" in node_info:
+            latest = node_info["latest_reading"]
+            self.latest_temp_value.config(text=f"{latest['temperature']:.1f}°C")
+            self.latest_humid_value.config(text=f"{latest['humidity']:.1f}%")
+            self.latest_time_value.config(text=latest["timestamp"])
+        
+        # Set color based on anomaly status
+            if latest["temperature"] > self.edge_processor.temp_threshold_high or \
+                latest["temperature"] < self.edge_processor.temp_threshold_low:
+                self.latest_temp_value.config(bootstyle="danger")
+            else:
+                self.latest_temp_value.config(bootstyle="success")
+            
+            if latest["humidity"] > self.edge_processor.humidity_threshold_high or \
+                latest["humidity"] < self.edge_processor.humidity_threshold_low:
+                self.latest_humid_value.config(bootstyle="danger")
+            else:
+                self.latest_humid_value.config(bootstyle="success")
+
+    def update_nodes(self):
+        """Update the nodes status tab with current data"""
+        # Skip if necessary references aren't set yet
+        if not hasattr(self, 'edge_processor') or not self.edge_processor:
+            return
+        
+    # Get all readings from edge processor
+        readings = self.edge_processor.get_readings()
+    
+    # Process readings to update node data
+        now = datetime.datetime.now()
+    
+        for sensor_id, sensor_readings in readings.items():
+            if not sensor_readings:
+                continue
+            
+        # Create entry for new node
+            if sensor_id not in self.node_data:
+                self.node_data[sensor_id] = {
+                    "status": "Connected",
+                    "data_count": 0,
+                    "min_temp": float('inf'),
+                    "max_temp": float('-inf'),
+                    "min_humid": float('inf'),
+                    "max_humid": float('-inf')
+                }
+        
+        # Update node data
+            latest_reading = sensor_readings[-1]
+            self.node_data[sensor_id]["latest_reading"] = latest_reading
+            self.node_data[sensor_id]["last_seen"] = latest_reading["timestamp"]
+            self.node_data[sensor_id]["data_count"] = len(sensor_readings)
+        
+        # Update min/max values
+            for reading in sensor_readings:
+                temp = reading["temperature"]
+                humid = reading["humidity"]
+            
+                self.node_data[sensor_id]["min_temp"] = min(self.node_data[sensor_id]["min_temp"], temp)
+                self.node_data[sensor_id]["max_temp"] = max(self.node_data[sensor_id]["max_temp"], temp)
+                self.node_data[sensor_id]["min_humid"] = min(self.node_data[sensor_id]["min_humid"], humid)
+                self.node_data[sensor_id]["max_humid"] = max(self.node_data[sensor_id]["max_humid"], humid)
+    
+    # Update treeview
+    # First, save current selection
+        selected_items = self.nodes_tree.selection()
+        selected_ids = [self.nodes_tree.item(item, "text") for item in selected_items]
+    
+    # Clear treeview
+        for item in self.nodes_tree.get_children():
+            self.nodes_tree.delete(item)
+    
+    # Add nodes to treeview
+        for node_id, node_info in self.node_data.items():
+        # Format last seen time
+            last_seen = node_info.get("last_seen", "N/A")
+        
+        # Check if the node is still connected
+            is_connected = False
+            if self.connection_manager:
+                is_connected = node_id in self.connection_manager.node_to_addr and \
+                           self.connection_manager.node_to_addr[node_id] in self.connection_manager.active_connections
+        
+        # Update status
+            status = "Connected" if is_connected else "Disconnected"
+            node_info["status"] = status
+        
+        # Insert into treeview with appropriate status color
+            item = self.nodes_tree.insert("", "end", text=node_id, 
+                                    values=(status, last_seen),
+                                    tags=(status.lower(),))
+        
+        # Apply color to status
+            if status == "Connected":
+                self.nodes_tree.tag_configure("connected", foreground="#28a745")
+            else:
+                self.nodes_tree.tag_configure("disconnected", foreground="#dc3545")
+    
+    # Restore selection if items still exist
+        for node_id in selected_ids:
+            for item in self.nodes_tree.get_children():
+                if self.nodes_tree.item(item, "text") == node_id:
+                    self.nodes_tree.selection_add(item)
+                    break
+    
+    # Update details if a node is selected
+        if self.nodes_tree.selection():
+            selected_node = self.nodes_tree.item(self.nodes_tree.selection()[0], "text")
+            self.update_node_details(selected_node)
+
+    def refresh_nodes(self):
+        """Refresh the nodes list"""
+        self.update_nodes()
+        self.log_panel("SUCCESS: Refreshed nodes list")
+
+    def clear_node_selection(self):
+        """Clear the selected node"""
+        self.nodes_tree.selection_remove(self.nodes_tree.selection())
+    
+    # Reset detail fields
+        self.node_id_value.config(text="Select a node")
+        self.node_status_value.config(text="N/A")
+        self.node_lastseen_value.config(text="N/A")
+        self.node_datacount_value.config(text="N/A")
+        self.node_temprange_value.config(text="N/A")
+        self.node_humidrange_value.config(text="N/A")
+        self.node_anomalies_value.config(text="N/A")
+        self.latest_temp_value.config(text="N/A")
+        self.latest_humid_value.config(text="N/A")
+        self.latest_time_value.config(text="N/A")
+    
+    # Disable action buttons
+        self.disconnect_btn.config(state="disabled")
+        self.clear_btn.config(state="disabled")
+
+    def disconnect_selected_node(self):
+        """Disconnect the selected node"""
+        selection = self.nodes_tree.selection()
+        if not selection:
+            return
+    
+        node_id = self.nodes_tree.item(selection[0], "text")
+    
+        if not self.connection_manager:
+            self.log_panel("ERROR: Connection manager not available")
+            return
+        
+
+    # Try to disconnect the node
+        
+        success = self.connection_manager.disconnect_node(node_id)
+    
+        if success:
+            self.log_panel(f"SUCCESS: Disconnected node {node_id}")
+        # Update the node's status in our data
+            if node_id in self.node_data:
+                self.node_data[node_id]["status"] = "Disconnected"
+        # Update the node in the tree
+            self.nodes_tree.item(selection[0], values=("Disconnected", self.node_data[node_id].get("last_seen", "N/A")))
+            self.nodes_tree.tag_configure("disconnected", foreground="#dc3545")
+            self.nodes_tree.item(selection[0], tags=("disconnected",))
+        # Update details panel
+            self.update_node_details(node_id)
+        else:
+            self.log_panel(f"WARNING: Failed to disconnect node {node_id}")
+    
 class DroneServer:
     """Main drone server class that manages sensor connections, data processing, and server communication"""
     
@@ -895,6 +1270,17 @@ class DroneServer:
         self.data_queue = Queue(maxsize=100)  # Buffer for incoming sensor data
         self.active_connections = {}  # Track active sensor connections
         self.connection_lock = threading.Lock()
+
+        self.connection_manager = ConnectionManager(
+        self.active_connections, 
+        self.connection_lock,
+        logger=self.log
+        )
+
+         # After initializing connection_manager
+        self.gui.set_connection_manager(self.connection_manager, self.edge_processor)
+
+        
         
         # Start the server
         self.log("Drone server initializing...")
@@ -902,6 +1288,32 @@ class DroneServer:
         self.processor_thread = threading.Thread(target=self._process_data)
         self.battery_thread = threading.Thread(target=self._manage_battery)
         self.server_comm_thread = threading.Thread(target=self._communicate_with_server)
+        self.nodes_update_thread = threading.Thread(target=self._update_nodes_status)
+
+    def _update_nodes_status(self):
+        """Thread to periodically update node status information"""
+        while self.server_running:
+            try:
+            # Update nodes tab (only if not returning to base)
+                battery_status = self.battery_manager.check_status()
+                if not battery_status["returning_to_base"]:
+                # Use after method to safely update UI from another thread
+                    self.root.after(0, self.gui.update_nodes)
+            
+            # Refresh nodes list periodically
+                if hasattr(self, 'refresh_counter'):
+                    self.refresh_counter += 1
+                # Refresh every 10 iterations (10 seconds if sleep is 1s)
+                    if self.refresh_counter >= 10:
+                        self.root.after(0, self.gui.refresh_nodes)
+                        self.refresh_counter = 0
+                else:
+                    self.refresh_counter = 0
+                
+            except Exception as e:
+                self.log(f"Error updating nodes status: {e}")
+        
+            time.sleep(1)  # Update every second
     
     def start(self):
         """Start all threads and the main GUI loop"""
@@ -918,6 +1330,10 @@ class DroneServer:
         
         self.server_comm_thread.daemon = True
         self.server_comm_thread.start()
+
+        # Start the nodes update thread
+        self.nodes_update_thread.daemon = True
+        self.nodes_update_thread.start()
         
         self.log("Drone server started and ready for sensor connections")
         self.root.protocol("WM_DELETE_WINDOW", self.stop)  # Handle window close
@@ -994,6 +1410,7 @@ class DroneServer:
     
     def _handle_client(self, client_socket, addr):
         """Handle communication with a connected sensor node"""
+        sensor_id = None
         try:
             # Add to active connections
             with self.connection_lock:
@@ -1023,7 +1440,13 @@ class DroneServer:
                     line, buffer = buffer.split('\n', 1)
                     try:
                         sensor_data = json.loads(line)
-                        self.log(f"Received data from sensor {sensor_data.get('sensor_id')}")
+                        current_sensor_id = sensor_data.get('sensor_id')
+
+                        if current_sensor_id and (not sensor_id or sensor_id != current_sensor_id):
+                            sensor_id = current_sensor_id
+                            self.connection_manager.register_node(sensor_id, addr)
+                    
+                        self.log(f"Received data from sensor {sensor_id}")
                         
                         # Add to processing queue
                         try:
@@ -1165,7 +1588,62 @@ class DroneServer:
                 self.log(f"Error communicating with server: {e}")
                 time.sleep(5)
 
-
+class ConnectionManager:
+    """Manages connections to sensor nodes with ability to disconnect specific nodes"""
+    
+    def __init__(self, active_connections, connection_lock, logger=None):
+        """Initialize the connection manager
+        
+        Args:
+            active_connections: Dictionary of active connections {addr: socket}
+            connection_lock: Threading lock for safe access to connections
+            logger: Optional function for logging
+        """
+        self.active_connections = active_connections
+        self.connection_lock = connection_lock
+        self.logger = logger or print
+        self.node_to_addr = {}  # Map sensor_id to address
+    
+    def register_node(self, sensor_id, addr):
+        """Register a node ID with its connection address"""
+        with self.connection_lock:
+            self.node_to_addr[sensor_id] = addr
+            self.logger(f"Registered node {sensor_id} at {addr}")
+    
+    def disconnect_node(self, sensor_id):
+        """Disconnect a specific node by sensor ID
+        
+        Returns:
+            bool: True if successfully disconnected, False otherwise
+        """
+        with self.connection_lock:
+            # Find the address for this sensor ID
+            addr = self.node_to_addr.get(sensor_id)
+            if not addr:
+                self.logger(f"Cannot disconnect node {sensor_id}: address not found")
+                return False
+            
+            # Check if the connection is still active
+            if addr not in self.active_connections:
+                self.logger(f"Cannot disconnect node {sensor_id}: connection not active")
+                return False
+            
+            # Get the socket
+            conn = self.active_connections.get(addr)
+            if not conn:
+                self.logger(f"Cannot disconnect node {sensor_id}: socket not found")
+                return False
+            
+            # Close the connection
+            try:
+                conn.close()
+                del self.active_connections[addr]
+                self.logger(f"Disconnected node {sensor_id} at {addr}")
+                return True
+            except Exception as e:
+                self.logger(f"Error disconnecting node {sensor_id}: {e}")
+                return False
+            
 if __name__ == "__main__":
     # Example usage:
     drone_server = DroneServer(
