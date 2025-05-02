@@ -284,7 +284,7 @@ class DroneClient:
             self.connected = False
             return False
     
-    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level, status="normal"):
+    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level,status = "normal"):
         """Send processed data to the central server"""
         with self.lock:
             if not self.connected:
@@ -1631,39 +1631,33 @@ class DroneServer:
             try:
                 # Check if we should be sending data
                 battery_status = self.battery_manager.check_status()
-                # Default values
-                avg_temp = None
-                avg_humidity = None
-                anomalies = []
+                if battery_status["returning_to_base"]:
+                    self.root.after(0, self.gui.update_connection_status, False)
+                    time.sleep(5)
+                    continue
+                
+                # Compute averages and get anomalies
+                avg_temp, avg_humidity = self.edge_processor.compute_averages()
+                anomalies = self.edge_processor.get_anomalies()
                 drone_status = "normal"
 
                 if battery_status["charging"]:
                     drone_status = "charging"
+
                 elif battery_status["returning_to_base"]:
                     drone_status = "returning_to_base"
-                else:
-                    # Only compute averages if operating normally
-                    avg_temp, avg_humidity = self.edge_processor.compute_averages()
-                    anomalies = self.edge_processor.get_anomalies()
-                    drone_status = "normal"
 
-                # Always try to send something, even when returning or charging
-                
                 
                 # Send data to server
                 success = self.drone_client.send_to_server(
-                    avg_temp, 
-                    avg_humidity, 
-                    anomalies, 
-                    battery_status["level"],
-                    status=drone_status  # <-- New status field
-                    )
+                    avg_temp, avg_humidity, anomalies, battery_status["level"],status = drone_status
+                )
                 
                 # Update connection status in GUI
                 self.root.after(0, self.gui.update_connection_status, success)
                 
                 if success:
-                    self.log(f"Data sent to central server successfully (Status: {drone_status})")
+                    self.log("Data sent to central server successfully")
                 else:
                     self.log("Failed to send data to central server")
                 
