@@ -1,1220 +1,766 @@
 #!/usr/bin/env python3
 """Central server for the environmental monitoring system.
 Receives data from drones, displays it in real-time, and stores it for analysis."""
-
 import socket
-import threading
 import json
-import time
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog
+from tkinter import ttk, messagebox, scrolledtext
+import threading
 import datetime
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from collections import deque
-import matplotlib.dates as mdates
-import csv
-import os
-import sys
+import time
 import argparse
 
+# Check if ttkbootstrap is available
+try:
+    import ttkbootstrap as ttk
+    from ttkbootstrap import Style
+    USING_BOOTSTRAP = True
+except ImportError:
+    import tkinter.ttk as ttk
+    USING_BOOTSTRAP = False
+
 class ServerGUI:
-    """GUI for the central server to display and analyze environmental data"""
+    """
+    GUI for the central server in the environmental monitoring system.
+    Displays data received from drones including sensor readings, anomalies,
+    and system logs.
+    """
 
     def __init__(self, root):
+        """
+        Initialize the GUI components.
+        
+        Args:
+            root: The tkinter root window
+        """
         self.root = root
-        self.root.title("Environmental Monitoring - Central Command")
-        self.root.geometry("1280x900")
-        self.root.minsize(1000, 700)
+        
+        # Apply ttkbootstrap theme if available
+        if USING_BOOTSTRAP:
+            if not isinstance(root, ttk.Window):
+                self.style = Style(theme="darkly")
+                self.style.configure('TLabelframe', borderwidth=1)
+                self.style.configure('TLabelframe.Label', font=('Helvetica', 10, 'bold'))
+        
+        self.root.title("Environmental Monitoring System - Central Server")
+        self.root.geometry("1200x800")
+        self.server_instance = None  # Will be set by CentralServer
+        
+        # Data storage
+        self.drone_statuses = {}  # Store latest status for each drone
+        self.drone_data = []  # Store all data entries
+        self.anomalies = []  # Store all anomalies
+        
+        # Thread safety
+        self.update_lock = threading.Lock()
+        
+        # Set up the UI
+        self.setup_ui()
+        
+        # Register window close handler
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # Configure styles
-        self.configure_styles()
+    def setup_ui(self):
+        """Set up the main UI components and layout"""
+        # Configure grid weights for responsive resizing
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+        
+        # Create main container with padding
+        main_frame = ttk.Frame(self.root)
+        main_frame.grid(row=0, column=0, sticky="nsew", padx=15, pady=15)
+        
+        # Create notebook for tabbed interface
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        
+        # Configure grid weights
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(1, weight=0)  # Status bar
+        
+        # Create tab frames
+        main_tab = ttk.Frame(self.notebook)
+        data_logs_tab = ttk.Frame(self.notebook)
+        
+        # Add tabs to notebook
+        self.notebook.add(main_tab, text="Main Dashboard")
+        self.notebook.add(data_logs_tab, text="Data Logs")
+        
+        # Configure main tab grid weights
+        main_tab.grid_columnconfigure(0, weight=2)  # Left column (tables)
+        main_tab.grid_columnconfigure(1, weight=1)  # Right column (log)
+        main_tab.grid_rowconfigure(0, weight=3)  # Drone status table
+        main_tab.grid_rowconfigure(1, weight=4)  # Anomaly table
+        
+        # Configure data logs tab grid weights
+        data_logs_tab.grid_columnconfigure(0, weight=1)
+        data_logs_tab.grid_rowconfigure(0, weight=1)
+        
+        # Create panels in main tab
+        self.setup_drone_status_panel(main_tab)
+        self.setup_anomaly_panel(main_tab)
+        self.setup_log_panel(main_tab)
+        
+        # Create data logs panel in data logs tab
+        self.setup_data_logs_panel(data_logs_tab)
+        
+        # Setup status bar in main frame
+        self.setup_status_bar(main_frame)
 
-        # Create tabbed interface
-        self.tab_control = ttk.Notebook(root)
+    def setup_drone_status_panel(self, parent):
+        """
+        Create the drone status summary panel
+        
+        Args:
+            parent: Parent frame
+        """
+        # Create frame with label and padding
+        if USING_BOOTSTRAP:
+            status_frame = ttk.Labelframe(parent, text="Drone Status Dashboard", padding=10, bootstyle="primary")
+        else:
+            status_frame = ttk.LabelFrame(parent, text="Drone Status Dashboard", padding=10)
+        
+        status_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Create Treeview for drone status table
+        columns = ("drone_id", "timestamp", "temperature", "humidity", "battery", "status")
+        self.drone_table = ttk.Treeview(status_frame, columns=columns, show="headings", height=6)
+        
+        # Configure columns
+        self.drone_table.heading("drone_id", text="Drone ID")
+        self.drone_table.heading("timestamp", text="Last Update")
+        self.drone_table.heading("temperature", text="Temp (°C)")
+        self.drone_table.heading("humidity", text="Humidity (%)")
+        self.drone_table.heading("battery", text="Battery (%)")
+        self.drone_table.heading("status", text="Status")
+        
+        # Set column widths and anchors for better alignment
+        self.drone_table.column("drone_id", width=100, anchor="center")
+        self.drone_table.column("timestamp", width=150, anchor="center")
+        self.drone_table.column("temperature", width=80, anchor="center")
+        self.drone_table.column("humidity", width=80, anchor="center")
+        self.drone_table.column("battery", width=80, anchor="center")
+        self.drone_table.column("status", width=150, anchor="center")
+        
+        # Add scrollbars for better navigation
+        y_scrollbar = ttk.Scrollbar(status_frame, orient="vertical", command=self.drone_table.yview)
+        self.drone_table.configure(yscrollcommand=y_scrollbar.set)
+        
+        x_scrollbar = ttk.Scrollbar(status_frame, orient="horizontal", command=self.drone_table.xview)
+        self.drone_table.configure(xscrollcommand=x_scrollbar.set)
+        
+        # Use grid for responsive layout
+        status_frame.grid_columnconfigure(0, weight=1)
+        status_frame.grid_rowconfigure(0, weight=1)
+        status_frame.grid_rowconfigure(1, weight=0)
+        
+        self.drone_table.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Create tags for different status conditions
+        if USING_BOOTSTRAP:
+            self.drone_table.tag_configure("low_battery", background="#dc3545", foreground="white")  # Bootstrap danger
+            self.drone_table.tag_configure("returning", background="#fd7e14", foreground="white")  # Bootstrap orange
+            self.drone_table.tag_configure("charging", background="#198754", foreground="white")  # Bootstrap success
+            self.drone_table.tag_configure("normal", background="")  # Default background
+            self.drone_table.tag_configure("anomaly", background="#ffc107", foreground="black")  # Bootstrap warning
+        else:
+            self.drone_table.tag_configure("low_battery", background="#ffcccc")
+            self.drone_table.tag_configure("returning", background="#ffcc99")
+            self.drone_table.tag_configure("charging", background="#ccffcc")
+            self.drone_table.tag_configure("normal", background="#ffffff")
+            self.drone_table.tag_configure("anomaly", background="#ffffcc")
 
-        # Create tabs
-        self.dashboard_tab = ttk.Frame(self.tab_control)
-        self.data_tab = ttk.Frame(self.tab_control)
-        self.anomaly_tab = ttk.Frame(self.tab_control)
-        self.analytics_tab = ttk.Frame(self.tab_control)
-        self.log_tab = ttk.Frame(self.tab_control)
-
-        self.tab_control.add(self.dashboard_tab, text="Dashboard")
-        self.tab_control.add(self.data_tab, text="Data Explorer")
-        self.tab_control.add(self.anomaly_tab, text="Anomaly Tracker")
-        self.tab_control.add(self.analytics_tab, text="Analytics")
-        self.tab_control.add(self.log_tab, text="System Logs")
-        self.tab_control.pack(expand=1, fill="both")
-
-        # Set up each tab
-        self._setup_dashboard_tab()
-        self._setup_data_tab()
-        self._setup_anomaly_tab()
-        self._setup_analytics_tab()
-        self._setup_log_tab()
-
-        # Set up status bar at the bottom
-        self._setup_status_bar()
-
-        # Data structures
-        # self.drone_data = {} # This was less useful, using drone_specific_data instead
-        self.historical_data = { # Limited size for quick chart updates
-            'timestamps': deque(maxlen=1000),
-            'temperatures': deque(maxlen=1000),
-            'humidities': deque(maxlen=1000),
-            'battery_levels': deque(maxlen=1000)
-        }
-
-        # Drone-specific data structures for detailed history and filtering
-        self.drone_specific_data = {}  # Store data by drone_id, deque(maxlen=5000) per drone
-
-        # System metrics
-        self.system_start_time = datetime.datetime.now()
-        self.data_points_received = 0 # Total number of individual sensor readings
-        self.anomalies_detected = 0 # Total number of anomalies recorded
-
-        # Initialize the drone status dictionary
-        self.drone_statuses = {}  # Store connection status and latest data by drone_id
-
-        # All anomalies list for filtering and analysis
-        self.all_anomalies = [] # deque(maxlen=5000) might be better for very long runs
-
-        # Auto-update timer
-        self.update_timer = None
-        self.auto_update_interval = 5000  # milliseconds (5 seconds)
-        self.setup_auto_update()
-
-        # Link to the server instance (will be set by CentralServer)
-        self.server_instance = None
-
-    def configure_styles(self):
-        """Configure ttk styles for better appearance"""
-        style = ttk.Style()
-        style.theme_use('clam')  # Use 'clam' theme as base
-
-        # Configure notebook (tabs)
-        style.configure('TNotebook', background='#f0f0f0', tabmargins=[2, 5, 2, 0])
-        style.map('TNotebook.Tab', background=[('selected', '#4a6ea9')],
-                   foreground=[('selected', '#ffffff')])
-        style.configure('TNotebook.Tab', padding=[10, 5], font=('Arial', 10))
-
-        # Configure frames
-        style.configure('TFrame', background='#f5f5f5')
-        style.configure('Dashboard.TFrame', background='#ffffff')
-
-        # Configure labels
-        style.configure('TLabel', font=('Arial', 10))
-        style.configure('Header.TLabel', font=('Arial', 12, 'bold'))
-        style.configure('Stats.TLabel', font=('Arial', 11), padding=5)
-        style.configure('Value.TLabel', font=('Arial', 11, 'bold'), foreground='#2c3e50')
-
-        # Configure buttons
-        style.configure('TButton', font=('Arial', 10), padding=5)
-        style.configure('Action.TButton', font=('Arial', 10, 'bold'),
-                        background='#4a6ea9', foreground='white')
-
-        # Configure Treeview
-        style.configure('Treeview', font=('Arial', 9), rowheight=20)
-        style.configure('Treeview.Heading', font=('Arial', 10, 'bold'))
-        style.map('Treeview', background=[('selected', '#347083')],
-                   foreground=[('selected', 'white')])
-
-
-    def _setup_dashboard_tab(self):
-        """Set up the dashboard with current readings, drone status, and charts"""
-        # Use a grid layout for better organization
-        self.dashboard_tab.columnconfigure(0, weight=2)
-        self.dashboard_tab.columnconfigure(1, weight=3)
-        self.dashboard_tab.rowconfigure(0, weight=1)
-        self.dashboard_tab.rowconfigure(1, weight=4)
-
-        # System overview panel (top left)
-        overview_frame = ttk.LabelFrame(self.dashboard_tab, text="System Overview")
-        overview_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        # System metrics
-        ttk.Label(overview_frame, text="System Status:", style='Stats.TLabel').grid(row=0, column=0, sticky="w", padx=10, pady=2)
-        self.system_status = ttk.Label(overview_frame, text="Offline", style='Value.TLabel', foreground="#e74c3c")
-        self.system_status.grid(row=0, column=1, sticky="w", padx=10, pady=2)
-
-        ttk.Label(overview_frame, text="Running Since:", style='Stats.TLabel').grid(row=1, column=0, sticky="w", padx=10, pady=2)
-        self.uptime_label = ttk.Label(overview_frame, text="00:00:00", style='Value.TLabel')
-        self.uptime_label.grid(row=1, column=1, sticky="w", padx=10, pady=2)
-
-        ttk.Label(overview_frame, text="Connected Drones:", style='Stats.TLabel').grid(row=2, column=0, sticky="w", padx=10, pady=2)
-        self.connected_drones = ttk.Label(overview_frame, text="0", style='Value.TLabel')
-        self.connected_drones.grid(row=2, column=1, sticky="w", padx=10, pady=2)
-
-        ttk.Label(overview_frame, text="Data Points:", style='Stats.TLabel').grid(row=3, column=0, sticky="w", padx=10, pady=2)
-        self.data_points = ttk.Label(overview_frame, text="0", style='Value.TLabel')
-        self.data_points.grid(row=3, column=1, sticky="w", padx=10, pady=2)
-
-        ttk.Label(overview_frame, text="Active Anomalies:", style='Stats.TLabel').grid(row=4, column=0, sticky="w", padx=10, pady=2)
-        self.active_anomalies = ttk.Label(overview_frame, text="0", style='Value.TLabel')
-        self.active_anomalies.grid(row=4, column=1, sticky="w", padx=10, pady=2)
-
-        # Current readings panel (top right)
-        readings_frame = ttk.LabelFrame(self.dashboard_tab, text="Current Environmental Readings")
-        readings_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-        readings_frame.columnconfigure(0, weight=1)
-        readings_frame.columnconfigure(1, weight=1)
-        readings_frame.columnconfigure(2, weight=1)
-
-        # Temperature gauge
-        temp_frame = ttk.Frame(readings_frame)
-        temp_frame.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
-
-        ttk.Label(temp_frame, text="TEMPERATURE", style='Header.TLabel').pack(anchor="center", pady=5)
-        self.current_temp = ttk.Label(temp_frame, text="--.-°C", font=('Arial', 18, 'bold'), foreground="#e74c3c")
-        self.current_temp.pack(anchor="center", pady=5)
-        ttk.Label(temp_frame, text="System Average", style='Stats.TLabel').pack(anchor="center")
-
-        # Humidity gauge
-        humidity_frame = ttk.Frame(readings_frame)
-        humidity_frame.grid(row=0, column=1, padx=10, pady=5, sticky="nsew")
-
-        ttk.Label(humidity_frame, text="HUMIDITY", style='Header.TLabel').pack(anchor="center", pady=5)
-        self.current_humidity = ttk.Label(humidity_frame, text="--.-%", font=('Arial', 18, 'bold'), foreground="#3498db")
-        self.current_humidity.pack(anchor="center", pady=5)
-        ttk.Label(humidity_frame, text="System Average", style='Stats.TLabel').pack(anchor="center")
-
-        # Battery gauge
-        battery_frame = ttk.Frame(readings_frame)
-        battery_frame.grid(row=0, column=2, padx=10, pady=5, sticky="nsew")
-
-        ttk.Label(battery_frame, text="BATTERY", style='Header.TLabel').pack(anchor="center", pady=5)
-        self.avg_battery = ttk.Label(battery_frame, text="--%", font=('Arial', 18, 'bold'), foreground="#2ecc71")
-        self.avg_battery.pack(anchor="center", pady=5)
-        ttk.Label(battery_frame, text="Average Level", style='Stats.TLabel').pack(anchor="center")
-
-        # Drone status table (bottom left)
-        status_frame = ttk.LabelFrame(self.dashboard_tab, text="Drone Fleet Status")
-        status_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Create a tree view for drone status
-        self.drone_status_tree = ttk.Treeview(status_frame, columns=("Status", "Battery", "Temp", "Humidity", "Last Seen"))
-        self.drone_status_tree.heading("#0", text="Drone ID")
-        self.drone_status_tree.heading("Status", text="Status")
-        self.drone_status_tree.heading("Battery", text="Battery")
-        self.drone_status_tree.heading("Temp", text="Temperature")
-        self.drone_status_tree.heading("Humidity", text="Humidity")
-        self.drone_status_tree.heading("Last Seen", text="Last Seen")
-
-        self.drone_status_tree.column("#0", width=80, anchor="center")
-        self.drone_status_tree.column("Status", width=90, anchor="center")
-        self.drone_status_tree.column("Battery", width=70, anchor="center")
-        self.drone_status_tree.column("Temp", width=90, anchor="center")
-        self.drone_status_tree.column("Humidity", width=90, anchor="center")
-        self.drone_status_tree.column("Last Seen", width=130, anchor="center")
-
-        # Add scrollbar
-        status_scroll = ttk.Scrollbar(status_frame, orient="vertical", command=self.drone_status_tree.yview)
-        self.drone_status_tree.configure(yscrollcommand=status_scroll.set)
-        status_scroll.pack(side="right", fill="y")
-        self.drone_status_tree.pack(side="left", fill="both", expand=True)
-
-        # Charts frame (bottom right)
-        charts_frame = ttk.LabelFrame(self.dashboard_tab, text="Environmental Trends")
-        charts_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
-
-        # Create matplotlib figures for visualization
-        self.fig, self.axes = plt.subplots(2, 1, figsize=(8, 6), dpi=80)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=charts_frame)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        # Configure the temperature plot
-        self.temp_line, = self.axes[0].plot([], [], 'r-', linewidth=2, label='Temperature (°C)')
-        self.axes[0].set_title('Temperature Trend')
-        self.axes[0].set_ylabel('Temperature (°C)')
-        self.axes[0].legend(loc='upper right')
-        self.axes[0].grid(True, linestyle='--', alpha=0.7)
-
-        # Configure the humidity plot
-        self.humidity_line, = self.axes[1].plot([], [], 'b-', linewidth=2, label='Humidity (%)')
-        self.axes[1].set_title('Humidity Trend')
-        self.axes[1].set_xlabel('Time')
-        self.axes[1].set_ylabel('Humidity (%)')
-        self.axes[1].legend(loc='upper right')
-        self.axes[1].grid(True, linestyle='--', alpha=0.7)
-
-        # Time period control for charts
-        time_control_frame = ttk.Frame(charts_frame)
-        time_control_frame.pack(fill="x", pady=5)
-
-        ttk.Label(time_control_frame, text="Time Range:").pack(side="left", padx=5)
-        self.time_range_var = tk.StringVar(value="Last 1 hour")
-        time_range_combo = ttk.Combobox(time_control_frame, textvariable=self.time_range_var,
-                                        values=["Last 10 minutes", "Last 30 minutes", "Last 1 hour", "Last 24 hours", "All data"],
-                                        state="readonly") # Make it read-only
-        time_range_combo.pack(side="left", padx=5)
-        time_range_combo.bind("<<ComboboxSelected>>", self.update_charts)
-
-        ttk.Button(time_control_frame, text="Refresh", command=self.update_charts).pack(side="right", padx=5)
-
-        self.fig.tight_layout()
-
-
-    def _setup_data_tab(self):
-        """Set up the data tab with filtering options and data table"""
-        # Configure grid
-        self.data_tab.columnconfigure(0, weight=1)
-        self.data_tab.rowconfigure(0, weight=0)
-        self.data_tab.rowconfigure(1, weight=1)
-
-        # Create a frame for filtering
-        filter_frame = ttk.LabelFrame(self.data_tab, text="Data Filters")
-        filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-
-        # First row of filters
-        filter_row1 = ttk.Frame(filter_frame)
-        filter_row1.pack(fill="x", padx=5, pady=5)
-
-        # Drone filter
-        ttk.Label(filter_row1, text="Drone:").pack(side="left", padx=5, pady=5)
-        self.drone_filter = ttk.Combobox(filter_row1, values=["All"], width=15, state="readonly")
-        self.drone_filter.pack(side="left", padx=5, pady=5)
-        self.drone_filter.current(0)
-
-        # Time range filter
-        ttk.Label(filter_row1, text="Time Range:").pack(side="left", padx=20, pady=5)
-        self.time_filter = ttk.Combobox(filter_row1,
-                                       values=["Last hour", "Last 6 hours", "Last 24 hours", "Last 7 days", "All data"],
-                                      width=15, state="readonly")
-        self.time_filter.pack(side="left", padx=5, pady=5)
-        self.time_filter.current(2)  # Default to last 24 hours
-
-        # Second row of filters
-        filter_row2 = ttk.Frame(filter_frame)
-        filter_row2.pack(fill="x", padx=5, pady=5)
-
-        # Temperature range filter
-        ttk.Label(filter_row2, text="Temperature:").pack(side="left", padx=5, pady=5)
-        ttk.Label(filter_row2, text="Min:").pack(side="left")
-        self.temp_min = ttk.Entry(filter_row2, width=5)
-        self.temp_min.pack(side="left", padx=2, pady=5)
-        ttk.Label(filter_row2, text="Max:").pack(side="left", padx=5)
-        self.temp_max = ttk.Entry(filter_row2, width=5)
-        self.temp_max.pack(side="left", padx=2, pady=5)
-
-        # Humidity range filter
-        ttk.Label(filter_row2, text="Humidity:").pack(side="left", padx=20, pady=5)
-        ttk.Label(filter_row2, text="Min:").pack(side="left")
-        self.humid_min = ttk.Entry(filter_row2, width=5)
-        self.humid_min.pack(side="left", padx=2, pady=5)
-        ttk.Label(filter_row2, text="Max:").pack(side="left", padx=5)
-        self.humid_max = ttk.Entry(filter_row2, width=5)
-        self.humid_max.pack(side="left", padx=2, pady=5)
-
-        # Action buttons
-        button_frame = ttk.Frame(filter_frame)
-        button_frame.pack(fill="x", padx=5, pady=10)
-
-        ttk.Button(button_frame, text="Apply Filter", command=self._apply_filter).pack(side="left", padx=10, pady=5)
-        ttk.Button(button_frame, text="Reset Filter", command=self._reset_filter).pack(side="left", padx=10, pady=5)
-        ttk.Button(button_frame, text="Export Data", command=self._export_data).pack(side="right", padx=10, pady=5)
-
-        # Create data table
-        table_frame = ttk.Frame(self.data_tab)
-        table_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Create Treeview for data
-        self.data_tree = ttk.Treeview(table_frame,
-                                     columns=("Drone ID", "Timestamp", "Temperature", "Humidity", "Battery", "Readings"))
-        self.data_tree.heading("#0", text="ID")
-        self.data_tree.heading("Drone ID", text="Drone ID")
-        self.data_tree.heading("Timestamp", text="Timestamp")
-        self.data_tree.heading("Temperature", text="Temperature")
-        self.data_tree.heading("Humidity", text="Humidity")
-        self.data_tree.heading("Battery", text="Battery")
-        self.data_tree.heading("Readings", text="# Readings")
-
-        self.data_tree.column("#0", width=50, stretch=tk.NO, anchor="center")
-        self.data_tree.column("Drone ID", width=100, stretch=tk.YES, anchor="center")
-        self.data_tree.column("Timestamp", width=180, stretch=tk.YES, anchor="center")
-        self.data_tree.column("Temperature", width=100, stretch=tk.YES, anchor="center")
-        self.data_tree.column("Humidity", width=100, stretch=tk.YES, anchor="center")
-        self.data_tree.column("Battery", width=100, stretch=tk.YES, anchor="center")
-        self.data_tree.column("Readings", width=100, stretch=tk.YES, anchor="center")
-
+    def setup_anomaly_panel(self, parent):
+        """
+        Create the anomaly display panel
+        
+        Args:
+            parent: Parent frame
+        """
+        # Create frame with label and padding
+        if USING_BOOTSTRAP:
+            anomaly_frame = ttk.Labelframe(parent, text="Anomaly Alerts", padding=10, bootstyle="danger")
+        else:
+            anomaly_frame = ttk.LabelFrame(parent, text="Anomaly Alerts", padding=10)
+            
+        anomaly_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Create Treeview for anomaly table
+        columns = ("drone_id", "sensor_id", "issue", "value", "timestamp")
+        self.anomaly_table = ttk.Treeview(anomaly_frame, columns=columns, show="headings", height=8)
+        
+        # Configure columns
+        self.anomaly_table.heading("drone_id", text="Drone")
+        self.anomaly_table.heading("sensor_id", text="Sensor")
+        self.anomaly_table.heading("issue", text="Issue")
+        self.anomaly_table.heading("value", text="Value")
+        self.anomaly_table.heading("timestamp", text="Timestamp")
+        
+        # Set column widths and anchors
+        self.anomaly_table.column("drone_id", width=100, anchor="center")
+        self.anomaly_table.column("sensor_id", width=100, anchor="center")
+        self.anomaly_table.column("issue", width=150, anchor="w")  # Left-align text
+        self.anomaly_table.column("value", width=80, anchor="center")
+        self.anomaly_table.column("timestamp", width=150, anchor="center")
+        
         # Add scrollbars
-        y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.data_tree.yview)
-        x_scrollbar = ttk.Scrollbar(table_frame, orient="horizontal", command=self.data_tree.xview)
-        self.data_tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+        y_scrollbar = ttk.Scrollbar(anomaly_frame, orient="vertical", command=self.anomaly_table.yview)
+        self.anomaly_table.configure(yscrollcommand=y_scrollbar.set)
+        
+        x_scrollbar = ttk.Scrollbar(anomaly_frame, orient="horizontal", command=self.anomaly_table.xview)
+        self.anomaly_table.configure(xscrollcommand=x_scrollbar.set)
+        
+        # Use grid for responsive layout
+        anomaly_frame.grid_columnconfigure(0, weight=1)
+        anomaly_frame.grid_rowconfigure(0, weight=1)
+        anomaly_frame.grid_rowconfigure(1, weight=0)
+        
+        self.anomaly_table.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Configure tags for different anomaly types with more vibrant and consistent colors
+        if USING_BOOTSTRAP:
+            self.anomaly_table.tag_configure("temperature", background="#f8d7da", foreground="#721c24")  # Bootstrap danger light
+            self.anomaly_table.tag_configure("humidity", background="#d1ecf1", foreground="#0c5460")  # Bootstrap info light
+            self.anomaly_table.tag_configure("battery", background="#fff3cd", foreground="#856404")  # Bootstrap warning light
+            self.anomaly_table.tag_configure("connection", background="#d6d8d9", foreground="#1b1e21")  # Bootstrap secondary light
+        else:
+            self.anomaly_table.tag_configure("temperature", background="#ffcccc")
+            self.anomaly_table.tag_configure("humidity", background="#ccffff")
+            self.anomaly_table.tag_configure("battery", background="#ffffcc")
+            self.anomaly_table.tag_configure("connection", background="#dddddd")
 
-        y_scrollbar.pack(side="right", fill="y")
-        x_scrollbar.pack(side="bottom", fill="x")
-        self.data_tree.pack(side="left", fill="both", expand=True)
-
-
-    def _setup_anomaly_tab(self):
-        """Set up the anomalies tab with a table of detected anomalies"""
-        # Configure grid
-        self.anomaly_tab.columnconfigure(0, weight=1)
-        self.anomaly_tab.rowconfigure(0, weight=0)
-        self.anomaly_tab.rowconfigure(1, weight=1)
-
-        # Create anomaly filter frame
-        filter_frame = ttk.LabelFrame(self.anomaly_tab, text="Anomaly Filters")
-        filter_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-
-        # First row of filters
-        filter_row = ttk.Frame(filter_frame)
-        filter_row.pack(fill="x", padx=5, pady=5)
-
-        # Filter by type
-        ttk.Label(filter_row, text="Anomaly Type:").pack(side="left", padx=5, pady=5)
-        self.anomaly_type_filter = ttk.Combobox(filter_row,
-                                                values=["All", "Temperature High", "Temperature Low",
-                                                       "Humidity High", "Humidity Low", "Battery Low", "Connection Lost"],
-                                               width=15, state="readonly")
-        self.anomaly_type_filter.pack(side="left", padx=5, pady=5)
-        self.anomaly_type_filter.current(0)
-
-        # Filter by drone
-        ttk.Label(filter_row, text="Drone:").pack(side="left", padx=20, pady=5)
-        self.anomaly_drone_filter = ttk.Combobox(filter_row, values=["All"], width=15, state="readonly")
-        self.anomaly_drone_filter.pack(side="left", padx=5, pady=5)
-        self.anomaly_drone_filter.current(0)
-
-        # Filter by time range
-        ttk.Label(filter_row, text="Time Range:").pack(side="left", padx=20, pady=5)
-        self.anomaly_time_filter = ttk.Combobox(filter_row,
-                                               values=["Last hour", "Last 24 hours", "Last 7 days", "All"],
-                                              width=15, state="readonly")
-        self.anomaly_time_filter.pack(side="left", padx=5, pady=5)
-        self.anomaly_time_filter.current(1)  # Default to last 24 hours
-
-        # Action buttons
-        button_frame = ttk.Frame(filter_frame)
-        button_frame.pack(fill="x", padx=5, pady=5)
-
-        ttk.Button(button_frame, text="Apply Filter", command=self._apply_anomaly_filter).pack(side="left", padx=10, pady=5)
-        ttk.Button(button_frame, text="Reset Filter", command=self._reset_anomaly_filter).pack(side="left", padx=10, pady=5)
-        ttk.Button(button_frame, text="Export Anomalies", command=self._export_anomalies).pack(side="right", padx=10, pady=5)
-
-        # Create anomaly table
-        table_frame = ttk.Frame(self.anomaly_tab)
-        table_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Create Treeview for anomalies
-        self.anomaly_tree = ttk.Treeview(table_frame,
-                                        columns=("Drone ID", "Sensor ID", "Issue", "Value", "Threshold", "Timestamp"))
-        self.anomaly_tree.heading("#0", text="ID")
-        self.anomaly_tree.heading("Drone ID", text="Drone ID")
-        self.anomaly_tree.heading("Sensor ID", text="Sensor ID")
-        self.anomaly_tree.heading("Issue", text="Issue")
-        self.anomaly_tree.heading("Value", text="Value")
-        self.anomaly_tree.heading("Threshold", text="Threshold")
-        self.anomaly_tree.heading("Timestamp", text="Timestamp")
-
-        self.anomaly_tree.column("#0", width=50, stretch=tk.NO, anchor="center")
-        self.anomaly_tree.column("Drone ID", width=100, stretch=tk.YES, anchor="center")
-        self.anomaly_tree.column("Sensor ID", width=100, stretch=tk.YES, anchor="center")
-        self.anomaly_tree.column("Issue", width=150, stretch=tk.YES)
-        self.anomaly_tree.column("Value", width=80, stretch=tk.YES, anchor="center")
-        self.anomaly_tree.column("Threshold", width=80, stretch=tk.YES, anchor="center")
-        self.anomaly_tree.column("Timestamp", width=180, stretch=tk.YES, anchor="center")
-
+    def setup_data_logs_panel(self, parent):
+        """
+        Create the data logs panel to display all received data
+        
+        Args:
+            parent: Parent frame
+        """
+        # Create frame with label and padding
+        if USING_BOOTSTRAP:
+            data_logs_frame = ttk.Labelframe(parent, text="Data Logs", padding=10, bootstyle="primary")
+        else:
+            data_logs_frame = ttk.LabelFrame(parent, text="Data Logs", padding=10)
+            
+        data_logs_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid weights
+        data_logs_frame.grid_columnconfigure(0, weight=1)
+        data_logs_frame.grid_rowconfigure(0, weight=1)
+        data_logs_frame.grid_rowconfigure(1, weight=0)
+        
+        # Create Treeview for data logs table
+        columns = ("timestamp", "drone_id", "temperature", "humidity", "battery", "status", "has_anomalies")
+        self.data_logs_table = ttk.Treeview(data_logs_frame, columns=columns, show="headings", height=15)
+        
+        # Configure columns
+        self.data_logs_table.heading("timestamp", text="Timestamp")
+        self.data_logs_table.heading("drone_id", text="Drone ID")
+        self.data_logs_table.heading("temperature", text="Temperature (°C)")
+        self.data_logs_table.heading("humidity", text="Humidity (%)")
+        self.data_logs_table.heading("battery", text="Battery (%)")
+        self.data_logs_table.heading("status", text="Status")
+        self.data_logs_table.heading("has_anomalies", text="Anomalies")
+        
+        # Set column widths and anchors
+        self.data_logs_table.column("timestamp", width=150, anchor="center")
+        self.data_logs_table.column("drone_id", width=100, anchor="center")
+        self.data_logs_table.column("temperature", width=100, anchor="center")
+        self.data_logs_table.column("humidity", width=100, anchor="center")
+        self.data_logs_table.column("battery", width=80, anchor="center")
+        self.data_logs_table.column("status", width=150, anchor="center")
+        self.data_logs_table.column("has_anomalies", width=80, anchor="center")
+        
         # Add scrollbars
-        y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.anomaly_tree.yview)
-        x_scrollbar = ttk.Scrollbar(table_frame, orient="horizontal", command=self.anomaly_tree.xview)
-        self.anomaly_tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
-
-        y_scrollbar.pack(side="right", fill="y")
-        x_scrollbar.pack(side="bottom", fill="x")
-        self.anomaly_tree.pack(side="left", fill="both", expand=True)
-
-
-    def _setup_analytics_tab(self):
-        """Set up the analytics tab with statistical charts and metrics"""
-        # Configure grid
-        self.analytics_tab.columnconfigure(0, weight=1)
-        self.analytics_tab.columnconfigure(1, weight=1)
-        self.analytics_tab.rowconfigure(0, weight=1)
-        self.analytics_tab.rowconfigure(1, weight=1)
-
-        # Temperature statistics panel
-        temp_frame = ttk.LabelFrame(self.analytics_tab, text="Temperature Statistics")
-        temp_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Create figure for temperature histogram
-        self.temp_fig, self.temp_ax = plt.subplots(figsize=(5, 4), dpi=80)
-        self.temp_canvas = FigureCanvasTkAgg(self.temp_fig, master=temp_frame)
-        self.temp_canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.temp_ax.set_title('Temperature Distribution')
-        self.temp_ax.set_xlabel('Temperature (°C)')
-        self.temp_ax.set_ylabel('Frequency')
-        self.temp_ax.grid(True, linestyle='--', alpha=0.7)
-
-        # Humidity statistics panel
-        humidity_frame = ttk.LabelFrame(self.analytics_tab, text="Humidity Statistics")
-        humidity_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-
-        # Create figure for humidity histogram
-        self.humidity_fig, self.humidity_ax = plt.subplots(figsize=(5, 4), dpi=80)
-        self.humidity_canvas = FigureCanvasTkAgg(self.humidity_fig, master=humidity_frame)
-        self.humidity_canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.humidity_ax.set_title('Humidity Distribution')
-        self.humidity_ax.set_xlabel('Humidity (%)')
-        self.humidity_ax.set_ylabel('Frequency')
-        self.humidity_ax.grid(True, linestyle='--', alpha=0.7)
-
-        # Drone comparison panel
-        drone_frame = ttk.LabelFrame(self.analytics_tab, text="Drone Comparison")
-        drone_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Create figure for drone comparison
-        self.drone_fig, self.drone_ax = plt.subplots(figsize=(5, 4), dpi=80)
-        self.drone_canvas = FigureCanvasTkAgg(self.drone_fig, master=drone_frame)
-        self.drone_canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.drone_ax.set_title('Average Temperature by Drone')
-        self.drone_ax.set_xlabel('Drone ID')
-        self.drone_ax.set_ylabel('Average Temperature (°C)')
-        self.drone_ax.grid(True, linestyle='--', alpha=0.7, axis='y') # Grid only on y-axis
-
-        # Anomaly distribution panel
-        anomaly_frame = ttk.LabelFrame(self.analytics_tab, text="Anomaly Distribution")
-        anomaly_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
-
-        # Create figure for anomaly pie chart
-        self.anomaly_fig, self.anomaly_ax = plt.subplots(figsize=(5, 4), dpi=80)
-        self.anomaly_canvas = FigureCanvasTkAgg(self.anomaly_fig, master=anomaly_frame)
-        self.anomaly_canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.anomaly_ax.set_title('Anomaly Types')
-
-        # Refresh button for analytics
-        control_frame = ttk.Frame(self.analytics_tab)
-        control_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-
-        ttk.Button(control_frame, text="Refresh Analytics", command=self.update_analytics).pack(side="right", padx=10, pady=5)
-
-        # Make sure plots are properly laid out
-        self.temp_fig.tight_layout()
-        self.humidity_fig.tight_layout()
-        self.drone_fig.tight_layout()
-        self.anomaly_fig.tight_layout()
-
-
-    def _setup_log_tab(self):
-        """Set up the log tab with a text area for logs"""
-        # Configure grid
-        self.log_tab.columnconfigure(0, weight=1)
-        self.log_tab.rowconfigure(0, weight=1)
-
-        # Create scrolled text widget for logs
-        self.log_text = scrolledtext.ScrolledText(self.log_tab, wrap=tk.WORD, state='disabled', font=('Consolas', 9))
-        self.log_text.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-
-        # Add tags for coloring different log levels
-        self.log_text.tag_config('info', foreground='black')
-        self.log_text.tag_config('warning', foreground='orange')
-        self.log_text.tag_config('error', foreground='red')
-
-
-    def _setup_status_bar(self):
-        """Set up status bar at the bottom of the window"""
-        status_frame = ttk.Frame(self.root, style='TFrame')
-        status_frame.pack(side="bottom", fill="x", padx=5, pady=2)
-
-        # Server status
-        self.server_status = ttk.Label(status_frame, text="Server: Initializing...", style='TLabel')
-        self.server_status.pack(side="left", padx=10)
-
-        # Connection count
-        self.connection_count = ttk.Label(status_frame, text="Connections: 0", style='TLabel')
-        self.connection_count.pack(side="left", padx=10)
-
-        # Last updated
-        self.last_updated = ttk.Label(status_frame, text="Last Updated: Never", style='TLabel')
-        self.last_updated.pack(side="right", padx=10)
-
-
-    def _apply_filter(self):
-        """Apply filter to the data table based on selected criteria"""
-        drone_id_filter = self.drone_filter.get()
-        time_range_filter = self.time_filter.get()
-        temp_min_filter = self.temp_min.get().strip()
-        temp_max_filter = self.temp_max.get().strip()
-        humid_min_filter = self.humid_min.get().strip()
-        humid_max_filter = self.humid_max.get().strip()
-
-        # Clear current data in the treeview
-        for item in self.data_tree.get_children():
-            self.data_tree.delete(item)
-
-        # Get the time threshold based on the selected range
-        now = datetime.datetime.now()
-        time_delta = None
-        if time_range_filter == "Last hour":
-            time_delta = datetime.timedelta(hours=1)
-        elif time_range_filter == "Last 6 hours":
-            time_delta = datetime.timedelta(hours=6)
-        elif time_range_filter == "Last 24 hours":
-            time_delta = datetime.timedelta(hours=24)
-        elif time_range_filter == "Last 7 days":
-            time_delta = datetime.timedelta(days=7)
-
-        time_threshold = now - time_delta if time_delta else None
-
-        # Filter the data
-        filtered_data = []
-        # Iterate through all stored drone data
-        for drone_id, data_list in self.drone_specific_data.items():
-            if drone_id_filter != "All" and drone_id != drone_id_filter:
-                continue # Skip if not the selected drone
-
-            for entry in data_list:
-                # Apply time filter
-                try:
-                    entry_time = datetime.datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                    if time_threshold and entry_time < time_threshold:
-                        continue # Skip if outside the time range
-                except ValueError:
-                    self.log(f"Warning: Could not parse timestamp '{entry.get('timestamp')}' for filtering.", level='warning')
-                    continue # Skip entry with invalid timestamp
-
-                # Apply temperature filter
-                try:
-                    temp = entry.get("average_temperature")
-                    if temp is not None:
-                        if temp_min_filter and temp < float(temp_min_filter):
-                            continue
-                        if temp_max_filter and temp > float(temp_max_filter):
-                            continue
-                except ValueError:
-                    self.log(f"Warning: Invalid temperature filter input: min='{temp_min_filter}', max='{temp_max_filter}'. Ignoring.", level='warning')
-                    pass # Ignore invalid temperature filter input
-
-                # Apply humidity filter
-                try:
-                    humidity = entry.get("average_humidity")
-                    if humidity is not None:
-                        if humid_min_filter and humidity < float(humid_min_min_filter):
-                            continue
-                        if humid_max_filter and humidity > float(humid_max_filter):
-                            continue
-                except ValueError:
-                     self.log(f"Warning: Invalid humidity filter input: min='{humid_min_filter}', max='{humid_max_filter}'. Ignoring.", level='warning')
-                     pass # Ignore invalid humidity filter input
-
-                filtered_data.append(entry)
-
-        # Sort filtered data by timestamp
-        filtered_data.sort(key=lambda x: datetime.datetime.strptime(x["timestamp"], "%Y-%m-%dT%H:%M:%SZ") if "timestamp" in x else datetime.datetime.min)
-
-
-        # Insert filtered data into the treeview
-        for i, entry in enumerate(filtered_data):
-             self.data_tree.insert("", "end", text=str(i+1),
-                                    values=(entry.get("drone_id", "N/A"),
-                                           entry.get("timestamp", "N/A"),
-                                           f"{entry.get('average_temperature', 'N/A'):.2f}°C" if entry.get('average_temperature') is not None else 'N/A',
-                                           f"{entry.get('average_humidity', 'N/A'):.2f}%" if entry.get('average_humidity') is not None else 'N/A',
-                                           f"{entry.get('battery_level', 'N/A')}%" if entry.get('battery_level') is not None else 'N/A',
-                                           entry.get("num_readings", "N/A")))
-
-        self.log(f"Data filter applied: Drone='{drone_id_filter}', Time='{time_range_filter}', Temp='{temp_min_filter}-{temp_max_filter}', Humid='{humid_min_filter}-{humid_max_filter}'")
-
-
-    def _reset_filter(self):
-        """Reset data filter to default values and show all data"""
-        self.drone_filter.current(0)
-        self.time_filter.current(2) # Last 24 hours
-        self.temp_min.delete(0, tk.END)
-        self.temp_max.delete(0, tk.END)
-        self.humid_min.delete(0, tk.END)
-        self.humid_max.delete(0, tk.END)
-        self._apply_filter() # Apply the reset filter
-        self.log("Data filter reset.")
-
-
-    def _export_data(self):
-        """Export filtered data from the data table to a CSV file"""
-        if not self.data_tree.get_children():
-            messagebox.showinfo("Export Data", "No data to export.")
-            return
-
-        file_path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                                                 title="Export Data")
-
-        if not file_path:
-            return # User cancelled
-
-        try:
-            with open(file_path, mode='w', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-
-                # Write header
-                header = ["ID"] + [self.data_tree.heading(col, "text") for col in self.data_tree["columns"]]
-                writer.writerow(header)
-
-                # Write data rows
-                for item_id in self.data_tree.get_children():
-                    row_data = [self.data_tree.item(item_id, "text")] + list(self.data_tree.item(item_id, "values"))
-                    writer.writerow(row_data)
-
-            messagebox.showinfo("Export Data", f"Data successfully exported to:\n{file_path}")
-            self.log(f"Data exported to {file_path}")
-
-        except Exception as e:
-            messagebox.showerror("Export Error", f"An error occurred during export:\n{e}")
-            self.log(f"Error exporting data: {e}", level='error')
-
-
-    def _apply_anomaly_filter(self):
-        """Apply filter to the anomaly table"""
-        # Clear the anomaly tree
-        for item in self.anomaly_tree.get_children():
-            self.anomaly_tree.delete(item)
-
-        # Get filter values
-        anomaly_type = self.anomaly_type_filter.get()
-        drone_id = self.anomaly_drone_filter.get()
-        time_range_filter = self.anomaly_time_filter.get()
-
-        # Get the time threshold based on the selected range
-        now = datetime.datetime.now()
-        time_delta = None
-        if time_range_filter == "Last hour":
-            time_delta = datetime.timedelta(hours=1)
-        elif time_range_filter == "Last 24 hours":
-            time_delta = datetime.timedelta(hours=24)
-        elif time_range_filter == "Last 7 days":
-            time_delta = datetime.timedelta(days=7)
-
-        time_threshold = now - time_delta if time_delta else None
-
-        # Filter anomalies
-        filtered_anomalies = []
-        for anomaly in self.all_anomalies:
-            # Apply type filter
-            if anomaly_type != "All":
-                # Map filter value to anomaly issue string
-                filter_issue_map = {
-                    "Temperature High": "temperature_too_high",
-                    "Temperature Low": "temperature_too_low",
-                    "Humidity High": "humidity_too_high",
-                    "Humidity Low": "humidity_too_low",
-                    "Battery Low": "battery_level_low",
-                    "Connection Lost": "connection_lost" # Assuming this issue string
-                }
-                expected_issue = filter_issue_map.get(anomaly_type)
-
-                if anomaly.get("issue") != expected_issue:
-                    continue
-
-            # Apply drone filter
-            if drone_id != "All" and anomaly.get("drone_id") != drone_id:
-                continue
-
-            # Apply time filter
-            try:
-                anomaly_time_str = anomaly.get("timestamp")
-                if anomaly_time_str:
-                    anomaly_time = datetime.datetime.strptime(anomaly_time_str, "%Y-%m-%dT%H:%M:%SZ")
-                    if time_threshold and anomaly_time < time_threshold:
-                        continue
-                elif time_threshold: # If no timestamp in anomaly, and time filter is active, skip
-                     continue
-            except ValueError:
-                 self.log(f"Warning: Could not parse anomaly timestamp '{anomaly_time_str}' for filtering.", level='warning')
-                 continue # Skip anomaly with invalid timestamp
-
-            filtered_anomalies.append(anomaly)
-
-        # Sort filtered anomalies by timestamp
-        filtered_anomalies.sort(key=lambda x: datetime.datetime.strptime(x["timestamp"], "%Y-%m-%dT%H:%M:%SZ") if "timestamp" in x and x["timestamp"] else datetime.datetime.min)
-
-
-        # Insert filtered anomalies
-        for i, anomaly in enumerate(filtered_anomalies):
-            self.anomaly_tree.insert("", "end", text=str(i+1),
-                                    values=(anomaly.get("drone_id", "N/A"),
-                                           anomaly.get("sensor_id", "N/A"),
-                                           anomaly.get("issue", "N/A"),
-                                           f"{anomaly.get('value', 'N/A'):.2f}" if isinstance(anomaly.get('value'), (int, float)) else anomaly.get('value', 'N/A'),
-                                           f"{anomaly.get('threshold', 'N/A')}" if isinstance(anomaly.get('threshold'), (int, float)) else anomaly.get('threshold', 'N/A'),
-                                           anomaly.get("timestamp", "N/A")))
-
-        self.log(f"Anomaly filter applied: Type='{anomaly_type}', Drone='{drone_id}', Time='{time_range_filter}'")
-
-
-    def _reset_anomaly_filter(self):
-        """Reset anomaly filter to default values and show all anomalies"""
-        self.anomaly_type_filter.current(0)
-        self.anomaly_drone_filter.current(0)
-        self.anomaly_time_filter.current(1) # Last 24 hours
-        self._apply_anomaly_filter() # Apply the reset filter
-        self.log("Anomaly filter reset.")
-
-
-    def _export_anomalies(self):
-        """Export filtered anomalies from the anomaly table to a CSV file"""
-        if not self.anomaly_tree.get_children():
-            messagebox.showinfo("Export Anomalies", "No anomalies to export.")
-            return
-
-        file_path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                                                 title="Export Anomalies")
-
-        if not file_path:
-            return # User cancelled
-
-        try:
-            with open(file_path, mode='w', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-
-                # Write header
-                header = ["ID"] + [self.anomaly_tree.heading(col, "text") for col in self.anomaly_tree["columns"]]
-                writer.writerow(header)
-
-                # Write data rows
-                for item_id in self.anomaly_tree.get_children():
-                    row_data = [self.anomaly_tree.item(item_id, "text")] + list(self.anomaly_tree.item(item_id, "values"))
-                    writer.writerow(row_data)
-
-            messagebox.showinfo("Export Anomalies", f"Anomalies successfully exported to:\n{file_path}")
-            self.log(f"Anomalies exported to {file_path}")
-
-        except Exception as e:
-            messagebox.showerror("Export Error", f"An error occurred during export:\n{e}")
-            self.log(f"Error exporting anomalies: {e}", level='error')
-
-
-    def update_drone_status(self, drone_id, status, battery_level, temp, humidity):
-        """Update the drone status in the UI and internal dictionary"""
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Update drone status dictionary
-        if drone_id not in self.drone_statuses:
-            self.drone_statuses[drone_id] = {
-                "status": status,
-                "battery": battery_level,
-                "temp": temp,
-                "humidity": humidity,
-                "last_seen": current_time,
-                "tree_id": None # Store the treeview item ID
-            }
-
-            # Add to filter dropdowns if not already present
-            current_drones = list(self.drone_filter['values'])
-            if drone_id not in current_drones:
-                # Insert in sorted order (excluding "All")
-                drones_without_all = sorted([d for d in current_drones if d != "All"] + [drone_id])
-                self.drone_filter['values'] = ["All"] + drones_without_all
-                self.anomaly_drone_filter['values'] = ["All"] + drones_without_all
-
-
-            # Add to tree view
-            tree_id = self.drone_status_tree.insert("", "end", text=drone_id,
-                                                  values=(status, f"{battery_level:.0f}%", f"{temp:.1f}°C", f"{humidity:.1f}%", current_time))
-            self.drone_statuses[drone_id]["tree_id"] = tree_id
-            self.log(f"New drone status tracked for: {drone_id}")
-
+        y_scrollbar = ttk.Scrollbar(data_logs_frame, orient="vertical", command=self.data_logs_table.yview)
+        self.data_logs_table.configure(yscrollcommand=y_scrollbar.set)
+        
+        x_scrollbar = ttk.Scrollbar(data_logs_frame, orient="horizontal", command=self.data_logs_table.xview)
+        self.data_logs_table.configure(xscrollcommand=x_scrollbar.set)
+        
+        # Place elements in grid
+        self.data_logs_table.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Configure tags for different data entries
+        if USING_BOOTSTRAP:
+            self.data_logs_table.tag_configure("normal", background="")
+            self.data_logs_table.tag_configure("anomaly", background="#fff3cd", foreground="#856404")
+            self.data_logs_table.tag_configure("low_battery", background="#f8d7da", foreground="#721c24")
+            self.data_logs_table.tag_configure("returning", background="#fd7e14", foreground="white")
+            self.data_logs_table.tag_configure("charging", background="#d1e7dd", foreground="#0f5132")
         else:
-            # Update existing entry in dictionary
-            self.drone_statuses[drone_id]["status"] = status
-            self.drone_statuses[drone_id]["battery"] = battery_level
-            self.drone_statuses[drone_id]["temp"] = temp
-            self.drone_statuses[drone_id]["humidity"] = humidity
-            self.drone_statuses[drone_id]["last_seen"] = current_time
+            self.data_logs_table.tag_configure("normal", background="#ffffff")
+            self.data_logs_table.tag_configure("anomaly", background="#ffffcc")
+            self.data_logs_table.tag_configure("low_battery", background="#ffcccc")
+            self.data_logs_table.tag_configure("returning", background="#ffcc99")
+            self.data_logs_table.tag_configure("charging", background="#ccffcc")
 
-            # Update tree view
-            tree_id = self.drone_statuses[drone_id]["tree_id"]
-            if tree_id: # Ensure tree_id exists
-                 self.drone_status_tree.item(tree_id, values=(status, f"{battery_level:.0f}%", f"{temp:.1f}°C", f"{humidity:.1f}%", current_time))
-
-
-    def update_current_readings(self):
-        """Calculate and update the system-wide average readings based on recent data"""
-        total_temp = 0
-        total_humidity = 0
-        total_battery = 0
-        active_drones_count = 0
-        now = datetime.datetime.now()
-        timeout_seconds = 30 # Consider drones active if seen in the last 30 seconds
-
-        # Iterate through drone statuses to get the latest data
-        # Create a list to track disconnected drones
-        disconnected_drones = []
-
-        for drone_id, status_data in list(self.drone_statuses.items()): # Use list to allow modification during iteration
-            try:
-                last_seen_time = datetime.datetime.strptime(status_data["last_seen"], "%Y-%m-%d %H:%M:%S")
-                if (now - last_seen_time).total_seconds() < timeout_seconds:
-                     total_temp += status_data["temp"]
-                     total_humidity += status_data["humidity"]
-                     total_battery += status_data["battery"]
-                     active_drones_count += 1
-                     # Update status in treeview if it was previously marked as disconnected
-                     if status_data["status"] == "Disconnected":
-                          self.update_drone_status(drone_id, "Connected", status_data["battery"], status_data["temp"], status_data["humidity"])
-                else:
-                    # Mark drone as disconnected if not seen recently
-                    if status_data["status"] != "Disconnected":
-                        self.update_drone_status(drone_id, "Disconnected", status_data["battery"], status_data["temp"], status_data["humidity"])
-                        # Add a 'connection_lost' anomaly
-                        self.add_anomalies(drone_id, [{
-                            "issue": "connection_lost",
-                            "value": (now - last_seen_time).total_seconds(),
-                            "threshold": timeout_seconds,
-                            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "sensor_id": "N/A" # Connection is not tied to a specific sensor
-                        }])
-                        self.log(f"Drone {drone_id} connection lost (last seen {status_data['last_seen']})", level='warning')
-
-
-            except ValueError:
-                self.log(f"Warning: Could not parse last_seen timestamp for drone {drone_id}: '{status_data.get('last_seen')}'", level='warning')
-                # Treat as disconnected if timestamp is invalid
-                if status_data["status"] != "Disconnected":
-                    self.update_drone_status(drone_id, "Disconnected", status_data.get("battery", 0), status_data.get("temp", 0), status_data.get("humidity", 0))
-                    self.log(f"Drone {drone_id} marked as disconnected due to invalid timestamp.", level='warning')
-
-
-        if active_drones_count > 0:
-            avg_temp = total_temp / active_drones_count
-            avg_humidity = total_humidity / active_drones_count
-            avg_battery = total_battery / active_drones_count
-            self.current_temp.config(text=f"{avg_temp:.1f}°C")
-            self.current_humidity.config(text=f"{avg_humidity:.1f}%")
-            self.avg_battery.config(text=f"{avg_battery:.0f}%")
+    def setup_log_panel(self, parent):
+        """
+        Create the log display panel
+        
+        Args:
+            parent: Parent frame
+        """
+        # Create frame with label and padding
+        if USING_BOOTSTRAP:
+            log_frame = ttk.Labelframe(parent, text="System Log", padding=10, bootstyle="info")
         else:
-            self.current_temp.config(text="--.-°C")
-            self.current_humidity.config(text="--.-%")
-            self.avg_battery.config(text="--%")
-
-        # Update connected drones count
-        self.connected_drones.config(text=str(active_drones_count))
-
-
-    def update_charts(self, event=None):
-        """Update the temperature and humidity charts based on the selected time range"""
-        time_range_filter = self.time_range_var.get()
-
-        # Get the time threshold based on the selected range
-        now = datetime.datetime.now()
-        time_delta = None
-        if time_range_filter == "Last 10 minutes":
-            time_delta = datetime.timedelta(minutes=10)
-        elif time_range_filter == "Last 30 minutes":
-            time_delta = datetime.timedelta(minutes=30)
-        elif time_range_filter == "Last 1 hour":
-            time_delta = datetime.timedelta(hours=1)
-        elif time_range_filter == "Last 24 hours":
-            time_delta = datetime.timedelta(hours=24)
-        elif time_range_filter == "All data":
-             time_delta = None # No time limit
-
-        time_threshold = now - time_delta if time_delta else None
-
-        # Filter historical data based on time threshold
-        filtered_times = []
-        filtered_temps = []
-        filtered_humidities = []
-
-        # Use data from drone_specific_data for charts to have access to more history
-        all_timestamps = []
-        all_temps = []
-        all_humidities = []
-
-        for drone_id, data_list in self.drone_specific_data.items():
-            for entry in data_list:
-                try:
-                    entry_time = datetime.datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                    if time_threshold and entry_time < time_threshold:
-                        continue
-                    all_timestamps.append(entry_time)
-                    all_temps.append(entry["average_temperature"])
-                    all_humidities.append(entry["average_humidity"])
-                except ValueError:
-                    self.log(f"Warning: Could not parse timestamp '{entry.get('timestamp')}' for chart filtering.", level='warning')
-                    continue # Skip entry with invalid timestamp
-
-
-        # Sort data by time
-        # Combine and sort is more robust than relying on deque order for time range filtering
-        combined_data = sorted(zip(all_timestamps, all_temps, all_humidities))
-        filtered_times, filtered_temps, filtered_humidities = zip(*combined_data) if combined_data else ([], [], [])
-
-
-        # Update temperature plot
-        self.temp_line.set_data(filtered_times, filtered_temps)
-        self.axes[0].relim()
-        self.axes[0].autoscale_view()
-
-        # Update humidity plot
-        self.humidity_line.set_data(filtered_times, filtered_humidities)
-        self.axes[1].relim()
-        self.axes[1].autoscale_view()
-
-        # Set x-axis limits
-        if filtered_times:
-            self.axes[0].set_xlim([min(filtered_times), max(filtered_times)])
-            self.axes[1].set_xlim([min(filtered_times), max(filtered_times)])
+            log_frame = ttk.LabelFrame(parent, text="System Log", padding=10)
+            
+        log_frame.grid(row=0, column=1, rowspan=2, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid weights
+        log_frame.grid_columnconfigure(0, weight=1)
+        log_frame.grid_rowconfigure(0, weight=1)
+        
+        # Create custom-styled Text widget for log
+        if USING_BOOTSTRAP:
+            # For bootstrap, use the built-in styling
+            self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=40, height=20, 
+                                                    bg="#343a40", fg="#f8f9fa")
         else:
-             # Set a default small range if no data
-             self.axes[0].set_xlim([now - datetime.timedelta(minutes=1), now])
-             self.axes[1].set_xlim([now - datetime.timedelta(minutes=1), now])
+            # For standard ttk, use custom colors
+            self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=40, height=20, 
+                                                    bg="#f0f0f0", fg="#000000")
+        
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        self.log_text.config(state=tk.DISABLED)  # Make it read-only
+        
+        # Configure tags for different log levels with consistent colors
+        self.log_text.tag_configure("info", foreground="#0dcaf0")  # Light blue for info
+        self.log_text.tag_configure("warning", foreground="#ffc107")  # Yellow for warnings
+        self.log_text.tag_configure("error", foreground="#dc3545")  # Red for errors
+        self.log_text.tag_configure("success", foreground="#20c997")  # Green for success
+        self.log_text.tag_configure("timestamp", foreground="#6c757d")  # Gray for timestamps
 
-
-        # Format x-axis with appropriate date formatter
-        self.axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        self.axes[1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-
-        # Rotate date labels for better readability
-        self.fig.autofmt_xdate()
-
-        self.fig.tight_layout()
-        self.canvas.draw_idle() # Use draw_idle for better performance
-
-
-    def update_analytics(self):
-        """Update the analytics charts and statistics"""
-        # Get all historical data for analytics
-        all_temps = [entry['average_temperature'] for drone_data_list in self.drone_specific_data.values() for entry in drone_data_list if 'average_temperature' in entry and entry['average_temperature'] is not None]
-        all_humidities = [entry['average_humidity'] for drone_data_list in self.drone_specific_data.values() for entry in drone_data_list if 'average_humidity' in entry and entry['average_humidity'] is not None]
-
-        # Update Temperature Distribution Histogram
-        self.temp_ax.clear()
-        if all_temps:
-            self.temp_ax.hist(all_temps, bins=20, color='#e74c3c', edgecolor='black')
-        self.temp_ax.set_title('Temperature Distribution')
-        self.temp_ax.set_xlabel('Temperature (°C)')
-        self.temp_ax.set_ylabel('Frequency')
-        self.temp_ax.grid(True, linestyle='--', alpha=0.7)
-        self.temp_fig.tight_layout()
-        self.temp_canvas.draw_idle()
-
-        # Update Humidity Distribution Histogram
-        self.humidity_ax.clear()
-        if all_humidities:
-            self.humidity_ax.hist(all_humidities, bins=20, color='#3498db', edgecolor='black')
-        self.humidity_ax.set_title('Humidity Distribution')
-        self.humidity_ax.set_xlabel('Humidity (%)')
-        self.humidity_ax.set_ylabel('Frequency')
-        self.humidity_ax.grid(True, linestyle='--', alpha=0.7)
-        self.humidity_fig.tight_layout()
-        self.humidity_canvas.draw_idle()
-
-        # Update Drone Comparison (Average Temperature)
-        self.drone_ax.clear()
-        if self.drone_specific_data:
-            drone_ids = []
-            avg_temps = []
-            for drone_id, data_list in self.drone_specific_data.items():
-                valid_temps = [entry['average_temperature'] for entry in data_list if 'average_temperature' in entry and entry['average_temperature'] is not None]
-                if valid_temps:
-                    drone_ids.append(drone_id)
-                    avg_temps.append(sum(valid_temps) / len(valid_temps))
-            if drone_ids:
-                # Sort by drone ID for consistent plotting
-                sorted_drones = sorted(zip(drone_ids, avg_temps))
-                sorted_drone_ids, sorted_avg_temps = zip(*sorted_drones)
-                self.drone_ax.bar(sorted_drone_ids, sorted_avg_temps, color='#2ecc71')
-                self.drone_ax.set_title('Average Temperature by Drone')
-                self.drone_ax.set_xlabel('Drone ID')
-                self.drone_ax.set_ylabel('Average Temperature (°C)')
-                self.drone_ax.tick_params(axis='x', rotation=45)
-        self.drone_ax.grid(True, linestyle='--', alpha=0.7, axis='y')
-        self.drone_fig.tight_layout()
-        self.drone_canvas.draw_idle()
-
-        # Update Anomaly Distribution Pie Chart
-        self.anomaly_ax.clear()
-        if self.all_anomalies:
-            anomaly_counts = {}
-            for anomaly in self.all_anomalies:
-                issue = anomaly.get("issue", "Unknown")
-                anomaly_counts[issue] = anomaly_counts.get(issue, 0) + 1
-
-            labels = anomaly_counts.keys()
-            sizes = anomaly_counts.values()
-            colors = ['#e74c3c', '#f39c12', '#3498db', '#9b59b6', '#f1c40f', '#1abc9c', '#7f8c8d'] # Example colors
-            # Ensure number of colors matches number of labels
-            pie_colors = colors[:len(labels)] + [plt.cm.viridis(i/len(labels)) for i in range(len(labels) - len(colors))] # Use viridis colormap for remaining
-            self.anomaly_ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=pie_colors)
-            self.anomaly_ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
-        self.anomaly_ax.set_title('Anomaly Types Distribution')
-        self.anomaly_fig.tight_layout()
-        self.anomaly_canvas.draw_idle()
-
-        self.log("Analytics updated.")
-
-
-    def add_data_entry(self, drone_data):
-        """Add a data entry to the internal data structures and update relevant counts"""
-        drone_id = drone_data.get("drone_id")
-        if not drone_id:
-             self.log("Received data with no drone_id. Skipping.", level='warning')
-             return
-
-        timestamp_str = drone_data.get("timestamp")
-        if not timestamp_str:
-             self.log(f"Received data from {drone_id} with no timestamp. Skipping.", level='warning')
-             return
-
-        avg_temp = drone_data.get("average_temperature")
-        avg_humidity = drone_data.get("average_humidity")
-        battery_level = drone_data.get("battery_level")
-        num_readings = drone_data.get("num_readings", 1) # Default to 1 if not provided
-
-        # Store data in drone-specific structure
-        if drone_id not in self.drone_specific_data:
-            # Limit history per drone to prevent excessive memory usage
-            self.drone_specific_data[drone_id] = deque(maxlen=5000)
-        self.drone_specific_data[drone_id].append(drone_data)
-
-        # Add to historical data for system-wide charts (limited size)
-        # This deque is primarily for the dashboard charts' live view
-        self.historical_data['timestamps'].append(timestamp_str)
-        if avg_temp is not None:
-             self.historical_data['temperatures'].append(avg_temp)
+    def setup_status_bar(self, parent):
+        """
+        Create the status bar at the bottom
+        
+        Args:
+            parent: Parent frame
+        """
+        # Create frame with padding and border
+        if USING_BOOTSTRAP:
+            status_bar = ttk.Frame(parent, padding=5, bootstyle="secondary")
         else:
-             self.historical_data['temperatures'].append(0) # Append a placeholder or handle None
-
-        if avg_humidity is not None:
-             self.historical_data['humidities'].append(avg_humidity)
+            status_bar = ttk.Frame(parent, padding=5)
+            
+        status_bar.grid(row=1, column=0, pady=(5, 0), sticky="ew")
+        
+        # Server status indicator with proper spacing
+        ttk.Label(status_bar, text="Server Status:").pack(side=tk.LEFT, padx=(5, 5))
+        
+        # Create status label with appropriate styling
+        if USING_BOOTSTRAP:
+            self.status_label = ttk.Label(status_bar, text="Initializing...", width=15, 
+                                       bootstyle="info", padding=5)
         else:
-             self.historical_data['humidities'].append(0) # Append a placeholder or handle None
-
-        if battery_level is not None:
-             self.historical_data['battery_levels'].append(battery_level)
+            self.status_label = ttk.Label(status_bar, text="Initializing...", width=15, padding=5)
+            
+        self.status_label.pack(side=tk.LEFT, padx=5)
+        
+        # Connection counter
+        ttk.Label(status_bar, text="Active Connections:").pack(side=tk.LEFT, padx=(20, 5))
+        
+        # Create connection count label with appropriate styling
+        if USING_BOOTSTRAP:
+            self.connection_count = ttk.Label(status_bar, text="0", width=5, 
+                                          bootstyle="info", padding=5)
         else:
-             self.historical_data['battery_levels'].append(0) # Append a placeholder or handle None
-
-
-        # Increment data points received
-        self.data_points_received += num_readings
-        self.data_points.config(text=str(self.data_points_received))
-
-        # Update the 'Last Updated' timestamp
-        self.last_updated.config(text=f"Last Updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-        # Update the drone's specific status in the dashboard table
-        # Use received data for the status table display
-        self.update_drone_status(drone_id, "Connected", battery_level if battery_level is not None else 0, avg_temp if avg_temp is not None else 0, avg_humidity if avg_humidity is not None else 0)
-
-
-        # The data table and charts are updated by the auto_update timer
-        # self.update_charts() # Moved to auto_update
-        # self._apply_filter() # Moved to auto_update
-
-
-    def add_anomalies(self, drone_id, anomalies):
-        """Add anomalies to the internal list and update UI elements"""
-        if not isinstance(anomalies, list):
-             self.log(f"Received anomalies from {drone_id} in incorrect format (expected list). Skipping.", level='warning')
-             return
-
-        current_time_str = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        anomalies_added_count = 0
-        for anomaly in anomalies:
-            if not isinstance(anomaly, dict):
-                 self.log(f"Received anomaly from {drone_id} in incorrect format (expected dict). Skipping.", level='warning')
-                 continue
-
-            # Ensure essential keys exist or provide defaults
-            anomaly["drone_id"] = drone_id
-            anomaly["timestamp"] = anomaly.get("timestamp", current_time_str) # Use received timestamp if available, otherwise current
-            anomaly["issue"] = anomaly.get("issue", "Unknown Anomaly")
-            anomaly["value"] = anomaly.get("value", "N/A")
-            anomaly["threshold"] = anomaly.get("threshold", "N/A")
-            anomaly["sensor_id"] = anomaly.get("sensor_id", "N/A")
-
-            self.all_anomalies.append(anomaly)
-            anomalies_added_count += 1
-
-        # Keep only the latest 5000 anomalies across all drones
-        if len(self.all_anomalies) > 5000:
-            self.all_anomalies = self.all_anomalies[-5000:] # Keep the most recent
-
-        # Update the anomaly count
-        self.anomalies_detected = len(self.all_anomalies)
-        self.active_anomalies.config(text=str(self.anomalies_detected))
-
-        # Reapply current filter to update the anomaly table
-        self._apply_anomaly_filter()
-
-        if anomalies_added_count > 0:
-             self.log(f"Received and processed {anomalies_added_count} anomalies from {drone_id}", level='warning')
-
+            self.connection_count = ttk.Label(status_bar, text="0", width=5, padding=5)
+            
+        self.connection_count.pack(side=tk.LEFT, padx=5)
+        
+        # Add exit button with improved styling
+        if USING_BOOTSTRAP:
+            exit_btn = ttk.Button(status_bar, text="Exit Server", bootstyle="danger-outline", 
+                                command=self.on_closing)
+        else:
+            exit_btn = ttk.Button(status_bar, text="Exit Server", command=self.on_closing)
+            
+        exit_btn.pack(side=tk.RIGHT, padx=10)
 
     def log(self, message, level='info'):
-        """Add a message to the log panel with a timestamp and optional color tag"""
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
+        """
+        Add a message to the log panel
+        
+        Args:
+            message: Message text
+            level: Log level (info, warning, error, success)
+        """
+        # Schedule GUI update to be thread-safe
+        self.root.after(0, self._update_log, message, level)
 
-        self.log_text.configure(state='normal') # Enable editing
-        self.log_text.insert(tk.END, log_entry, level) # Insert with tag
-        self.log_text.configure(state='disabled') # Disable editing
+    def _update_log(self, message, level):
+        """
+        Update log in the GUI thread
+        
+        Args:
+            message: Message text
+            level: Log level
+        """
+        # Get current time for timestamp
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        
+        # Enable editing
+        self.log_text.config(state=tk.NORMAL)
+        
+        # Insert timestamp and message
+        self.log_text.insert(tk.END, f"[{timestamp}] ", "timestamp")
+        self.log_text.insert(tk.END, f"{message}\n", level)
+        
+        # Auto-scroll to end
+        self.log_text.see(tk.END)
+        
+        # Disable editing
+        self.log_text.config(state=tk.DISABLED)
 
-        self.log_text.see(tk.END)  # Auto-scroll to the latest log
+    def update_server_status(self, status, active_connection_count):
+        """
+        Update the server status indicators
+        
+        Args:
+            status: Server status text
+            active_connection_count: Number of active connections
+        """
+        # Schedule GUI update to be thread-safe
+        self.root.after(0, self._update_status_display, status, active_connection_count)
 
+    def _update_status_display(self, status, active_connection_count):
+        """
+        Update status display in the GUI thread
+        
+        Args:
+            status: Server status text
+            active_connection_count: Number of active connections
+        """
+        # Update status label text
+        self.status_label.config(text=status)
+        
+        # Update style based on status
+        if USING_BOOTSTRAP:
+            if status == "Running":
+                self.status_label.configure(bootstyle="success")
+            elif status == "Stopped":
+                self.status_label.configure(bootstyle="danger")
+            elif status == "Error":
+                self.status_label.configure(bootstyle="warning")
+            else:
+                self.status_label.configure(bootstyle="info")
+        
+        # Update connection count
+        self.connection_count.config(text=str(active_connection_count))
 
-    def update_server_status(self, status, connections):
-        """Update the server status bar and system status label"""
-        self.server_status.config(text=f"Server: {status}")
-        self.connection_count.config(text=f"Connections: {connections}")
-        if status == "Running":
-            self.system_status.config(text="Online", foreground="#2ecc71")
-        elif status == "Stopped":
-             self.system_status.config(text="Offline", foreground="#e74c3c")
-        elif status == "Error":
-             self.system_status.config(text="Error", foreground="#f39c12")
+    def add_data_entry(self, drone_data):
+        """
+        Process a new data entry from a drone
+        
+        Args:
+            drone_data: Dictionary containing drone telemetry data
+        """
+        # Store data and update UI in a thread-safe way
+        with self.update_lock:
+            # Store data (up to 1000 entries)
+            self.drone_data.append(drone_data)
+            if len(self.drone_data) > 1000:
+                self.drone_data.pop(0)
+        
+        # Extract drone identification
+        drone_id = drone_data.get("drone_id", "unknown")
+        
+        # Always log data reception
+        self.log(f"Received data from {drone_id}", "info")
+        
+        # Extract relevant data
+        battery = drone_data.get("battery_level", 0)
+        temperature = drone_data.get("average_temperature", 0)
+        humidity = drone_data.get("average_humidity", 0)
+        
+        # Get raw status from data
+        raw_status = drone_data.get("status", "Connected")
+        
+        # Standardize status format (convert snake_case to Title Case)
+        if "_" in raw_status:
+            status = " ".join(word.capitalize() for word in raw_status.split("_"))
+        else:
+            status = raw_status
+        
+        # Check for special status values
+        if status.lower() == "returning to base" or status.lower() == "returning_to_base":
+            status = "Returning To Base"
+        elif status.lower() == "charging":
+            status = "Charging"
+        
+        # Check for anomalies
+        anomalies = drone_data.get("anomalies", [])
+        has_anomalies = len(anomalies) > 0
+        
+        # Process anomalies if present
+        if has_anomalies and status not in ["Returning To Base", "Charging"]:
+            status = "Anomalies Detected"
+            self.add_anomalies(drone_id, anomalies)
+        
+        # Handle low battery status (unless already in a special status)
+        if battery < 20 and status not in ["Returning To Base", "Charging", "Anomalies Detected"]:
+            status = "Returning To Base"
+            self.log(f"Drone {drone_id} is low on battery ({battery:.1f}%) - Returning to Base", "warning")
+        
+        # Check for status change and log appropriately
+        old_status = None
+        if drone_id in self.drone_statuses:
+            old_status = self.drone_statuses[drone_id].get("status")
+        
+        # Now that we have the final status determination, update the drone status in memory
+        self.update_drone_status(drone_id, status, battery, temperature, humidity)
+        
+        # Only log status changes, not repeats
+        if old_status is not None and old_status != status:
+            self.log(f"Drone {drone_id} status changed: {old_status} → {status}", 
+                    "warning" if status in ["Returning To Base", "Anomalies Detected"] else 
+                    "success" if status == "Charging" else "info")
+        
+        # Update data logs table
+        self.root.after(0, self._update_data_logs, drone_data, status, has_anomalies)
+        
+        # Update drone status display
+        self.root.after(0, self._update_drone_display, drone_data, status)
 
+    def _update_data_logs(self, drone_data, status, has_anomalies):
+        """
+        Update the data logs table with new data
+        
+        Args:
+            drone_data: Dictionary containing drone telemetry data
+            status: Current drone status
+            has_anomalies: Boolean indicating if anomalies are present
+        """
+        # Extract data
+        drone_id = drone_data.get("drone_id", "unknown")
+        timestamp = drone_data.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
+        temperature = drone_data.get("average_temperature", 0)
+        humidity = drone_data.get("average_humidity", 0)
+        battery = drone_data.get("battery_level", 0)
+        
+        # Format display values
+        display_timestamp = timestamp.replace("T", " ").replace("Z", "")
+        display_temp = f"{temperature:.1f}"
+        display_humidity = f"{humidity:.1f}"
+        display_battery = f"{battery:.1f}"
+        display_anomalies = "Yes" if has_anomalies else "No"
+        
+        # Determine row tag based on status and conditions
+        tag = "normal"
+        if status == "Anomalies Detected":
+            tag = "anomaly"
+        elif status == "Returning To Base":
+            tag = "returning"
+        elif status == "Charging":
+            tag = "charging"
+        elif battery < 20:
+            tag = "low_battery"
+        
+        # Insert into data logs table (newest at the top)
+        values = (display_timestamp, drone_id, display_temp, display_humidity, 
+                  display_battery, status, display_anomalies)
+        self.data_logs_table.insert("", 0, values=values, tags=(tag,))
+        
+        # Limit visible logs (delete old ones if over 1000)
+        children = self.data_logs_table.get_children()
+        if len(children) > 1000:
+            self.data_logs_table.delete(children[-1])
 
-    def setup_auto_update(self):
-        """Set up a timer to periodically update the GUI elements"""
-        self.auto_update() # Run immediately on setup
+    def _update_drone_display(self, drone_data, status=None):
+        """
+        Update the drone display table with new data
+        
+        Args:
+            drone_data: Dictionary containing drone telemetry data
+            status: Override status if provided
+        """
+        # Extract data from the drone_data
+        drone_id = drone_data.get("drone_id", "unknown")
+        timestamp = drone_data.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
+        temperature = drone_data.get("average_temperature", 0)
+        humidity = drone_data.get("average_humidity", 0)
+        battery = drone_data.get("battery_level", 0)
+        
+        # Use provided status or get from data
+        if status is None:
+            status = drone_data.get("status", "Connected")
+            # Convert snake_case to Title Case if needed
+            if "_" in status:
+                status = " ".join(word.capitalize() for word in status.split("_"))
+        
+        # Format display values
+        display_timestamp = timestamp.replace("T", " ").replace("Z", "")
+        display_temp = f"{temperature:.1f}"
+        display_humidity = f"{humidity:.1f}"
+        display_battery = f"{battery:.1f}"
+        
+        # Check if this drone is already in the table
+        existing_items = self.drone_table.get_children()
+        item_id = None
+        
+        for item in existing_items:
+            if self.drone_table.item(item, "values")[0] == drone_id:
+                item_id = item
+                break
+        
+        # Determine row tag based on status
+        tag = "normal"
+        if battery < 20:
+            tag = "low_battery"
+        elif status == "Charging":
+            tag = "charging"
+        elif status == "Returning To Base":
+            tag = "returning"
+        elif status == "Anomalies Detected":
+            tag = "anomaly"
+        
+        # Update or insert into table
+        values = (drone_id, display_timestamp, display_temp, display_humidity, display_battery, status)
+        if item_id:
+            self.drone_table.item(item_id, values=values, tags=(tag,))
+        else:
+            self.drone_table.insert("", tk.END, values=values, tags=(tag,))
 
-    def auto_update(self):
-        """Periodically update GUI elements like charts, data table, and uptime"""
-        # Update uptime
-        uptime_delta = datetime.datetime.now() - self.system_start_time
-        hours, remainder = divmod(uptime_delta.total_seconds(), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        self.uptime_label.config(text=f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    def add_anomalies(self, drone_id, anomalies):
+        """
+        Add anomaly entries to the anomaly panel
+        
+        Args:
+            drone_id: ID of the drone reporting anomalies
+            anomalies: List of anomaly dictionaries
+        """
+        if not anomalies:
+            return
+        
+        # Store anomalies
+        with self.update_lock:
+            for anomaly in anomalies:
+                anomaly_entry = anomaly.copy()
+                anomaly_entry["drone_id"] = drone_id
+                self.anomalies.append(anomaly_entry)
+                
+                # Limit to 1000 entries
+                if len(self.anomalies) > 1000:
+                    self.anomalies.pop(0)
+        
+        # Schedule UI update
+        self.root.after(0, self._update_anomaly_display, drone_id, anomalies)
+        
+        # Log anomalies
+        for anomaly in anomalies:
+            issue = anomaly.get("issue", "unknown")
+            sensor_id = anomaly.get("sensor_id", "unknown")
+            value = anomaly.get("value", 0)
+            self.log(f"Anomaly detected on {drone_id}, sensor {sensor_id}: {issue} ({value})", "warning")
 
-        # Update current readings (averages)
-        self.update_current_readings()
+    def _update_anomaly_display(self, drone_id, anomalies):
+        """
+        Update the anomaly display with new anomalies
+        
+        Args:
+            drone_id: ID of the drone reporting anomalies
+            anomalies: List of anomaly dictionaries
+        """
+        # Process each anomaly
+        for anomaly in anomalies:
+            # Extract data
+            sensor_id = anomaly.get("sensor_id", "unknown")
+            issue = anomaly.get("issue", "unknown")
+            value = anomaly.get("value", 0)
+            timestamp = anomaly.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
+            
+            # Format display values
+            display_timestamp = timestamp.replace("T", " ").replace("Z", "")
+            display_value = f"{value:.1f}" if isinstance(value, (float, int)) else str(value)
+            
+            # Format issue text (convert snake_case to readable text)
+            if "_" in issue:
+                display_issue = " ".join(word.capitalize() for word in issue.split("_"))
+            else:
+                display_issue = issue.capitalize()
+            
+            # Determine row tag based on issue type
+            tag = "temperature" if "temp" in issue.lower() else \
+                "humidity" if "humid" in issue.lower() else \
+                "battery" if "battery" in issue.lower() else \
+                "connection"
+            
+            # Insert into anomaly table (newest at the top)
+            values = (drone_id, sensor_id, display_issue, display_value, display_timestamp)
+            self.anomaly_table.insert("", 0, values=values, tags=(tag,))
+            
+            # Limit visible anomalies (delete old ones if over 100)
+            children = self.anomaly_table.get_children()
+            if len(children) > 100:
+                self.anomaly_table.delete(children[-1])
 
-        # Update charts
-        self.update_charts()
-
-        # Update data table (reapply filter to show latest data)
-        # Note: Reapplying the filter on every auto_update might be slow with very large datasets.
-        # Consider optimizing this if performance becomes an issue.
-        self._apply_filter()
-
-        # Schedule the next update
-        self.update_timer = self.root.after(self.auto_update_interval, self.auto_update)
+    def update_drone_status(self, drone_id, status, battery, temperature, humidity):
+        """
+        Update the stored status for a drone
+        
+        Args:
+            drone_id: ID of the drone
+            status: Current status text
+            battery: Battery level percentage
+            temperature: Average temperature
+            humidity: Average humidity
+        """
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        # Create or update status entry without triggering additional logs
+        self.drone_statuses[drone_id] = {
+            "status": status,
+            "timestamp": timestamp,
+            "battery": battery,
+            "temperature": temperature,
+            "humidity": humidity
+        }
 
     def on_closing(self):
-        """Handle window closing event"""
-        if messagebox.askokcancel("Quit", "Do you want to quit the server?"):
-            # Stop the server (if CentralServer instance is available)
-            if self.server_instance:
-                self.server_instance.stop()
-            else:
-                self.root.destroy() # Just destroy the GUI if server instance is not linked
-
+        """
+        Handle window closing event
+        """
+        # Show confirmation dialog
+        if messagebox.askokcancel("Quit", "Do you want to close the server?"):
+            # Log that we're shutting down
+            self.log("Server shutting down...", "warning")
+            
+            # Tell the server to stop if it exists
+            if self.server_instance is not None:
+                try:
+                    # Assume the server has a stop method
+                    self.server_instance.stop()
+                except Exception as e:
+                    self.log(f"Error stopping server: {e}", "error")
+            
+            # Destroy the window after a short delay
+            self.root.after(500, self.root.destroy)
 
 class CentralServer:
     """Central server that receives data from drones and displays it"""
 
     def __init__(self, listen_ip="127.0.0.1", listen_port=3500):
         # Initialize GUI
-        self.root = tk.Tk()
+        try:            
+            self.root = ttk.Window(themename="superhero")
+        except ImportError:
+            self.root = tk.Tk()  # Fallback to standard tkinter
+        
         self.gui = ServerGUI(self.root)
-        self.gui.server_instance = self # Link GUI back to server instance
+        self.gui.server_instance = self
 
         # Server settings
         self.listen_ip = listen_ip

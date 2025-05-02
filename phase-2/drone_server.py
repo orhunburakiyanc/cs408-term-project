@@ -242,28 +242,30 @@ class DroneClient:
             self.connected = False
             return False
     
-    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level):
+    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level, status="normal"):
         """Send processed data to the central server"""
         with self.lock:
             if not self.connected:
                 if not self.connect():
                     return False
-            
+
             data = {
                 "drone_id": self.drone_id,
                 "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "average_temperature": avg_temp,
                 "average_humidity": avg_humidity,
                 "anomalies": anomalies,
-                "battery_level": battery_level
+                "battery_level": battery_level,
+                "status": status
             }
-            
+
             try:
                 self.sock.sendall((json.dumps(data) + "\n").encode())
                 return True
             except (ConnectionResetError, BrokenPipeError):
                 self.connected = False
                 return False
+
 
 
 
@@ -1135,35 +1137,48 @@ class DroneServer:
         """Periodically send data to the central server"""
         while self.server_running:
             try:
-                # Check if we should be sending data
+                # Always check battery status
                 battery_status = self.battery_manager.check_status()
-                if battery_status["returning_to_base"]:
-                    self.root.after(0, self.gui.update_connection_status, False)
-                    time.sleep(5)
-                    continue
-                
-                # Compute averages and get anomalies
-                avg_temp, avg_humidity = self.edge_processor.compute_averages()
-                anomalies = self.edge_processor.get_anomalies()
-                
-                # Send data to server
+
+                # Default values
+                avg_temp = None
+                avg_humidity = None
+                anomalies = []
+                drone_status = "normal"
+
+                if battery_status["charging"]:
+                    drone_status = "charging"
+                elif battery_status["returning_to_base"]:
+                    drone_status = "returning_to_base"
+                else:
+                    # Only compute averages if operating normally
+                    avg_temp, avg_humidity = self.edge_processor.compute_averages()
+                    anomalies = self.edge_processor.get_anomalies()
+                    drone_status = "normal"
+
+                # Always try to send something, even when returning or charging
                 success = self.drone_client.send_to_server(
-                    avg_temp, avg_humidity, anomalies, battery_status["level"]
+                    avg_temp, 
+                    avg_humidity, 
+                    anomalies, 
+                    battery_status["level"],
+                    status=drone_status  # <-- New status field
                 )
-                
-                # Update connection status in GUI
+
+                # Update GUI connection status
                 self.root.after(0, self.gui.update_connection_status, success)
-                
+
                 if success:
-                    self.log("Data sent to central server successfully")
+                    self.log(f"Data sent to central server successfully (Status: {drone_status})")
                 else:
                     self.log("Failed to send data to central server")
-                
+
                 time.sleep(5)  # Send data every 5 seconds
-            
+
             except Exception as e:
                 self.log(f"Error communicating with server: {e}")
                 time.sleep(5)
+
 
 
 if __name__ == "__main__":
