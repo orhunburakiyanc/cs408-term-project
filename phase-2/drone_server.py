@@ -132,14 +132,17 @@ class BatteryManager:
         self.returning_start_time = None
         self.charging_start_time = None
         self.time_to_return = time_to_return  # seconds it takes to return to base
-        self.time_to_charge = time_to_charge  # estimated seconds for full charge
         self.lock = threading.Lock()
+        self.charge_start_level = 0
+
+        
     
     def consume(self):
         """Simulate battery consumption"""
         with self.lock:
             if not self.charging and not self.returning_to_base:
                 self.level -= self.consumption_rate
+                self.level = max(0, self.level)
                 if self.level < self.threshold:
                     self.returning_to_base = True
                     self.returning_start_time = time.time()
@@ -160,11 +163,14 @@ class BatteryManager:
                     self.charging = True
                     self.charging_start_time = current_time
                     # Log arrival for debugging
+                    if not hasattr(self, 'last_charge_time'):
+                        self.last_charge_time = current_time
+                    self.charge_start_level = self.level
                     print(f"[BATTERY] Arrived at base after {time_elapsed:.1f} seconds, starting to charge")
                     return
             
             # If we're charging
-            if self.charging and self.level < 100:
+            if self.charging and self.level < 80:
                 # Calculate charge increase based on time elapsed since last check
                 if not hasattr(self, 'last_charge_time'):
                     self.last_charge_time = current_time
@@ -175,21 +181,19 @@ class BatteryManager:
                 # Calculate charge based on time elapsed and charging rate
                 # Charging rate is percent per second
                 charge_increase = time_elapsed * self.charging_rate
-                self.level = min(100, self.level + charge_increase)
+                self.level = min(80, self.level + charge_increase)
                 
-                # Calculate and display estimated time remaining
-                if self.level < 80:
-                    percent_remaining = 80 - self.level
-                    time_remaining = percent_remaining / self.charging_rate
-                    print(f"[BATTERY] Charging: {self.level:.1f}%, estimated time to 80%: {time_remaining:.1f} seconds")
+                #
+               
                 
                 # Once charged enough, allow operations to continue
-                if self.level >= 80:  # Charge to 80% before resuming operations
+                if self.charging and self.level >= 80:  # Charge to 80% before resuming operations
                     total_charge_time = current_time - self.charging_start_time
                     self.returning_to_base = False
                     self.charging = False
                     self.returning_start_time = None
                     self.charging_start_time = None
+                    self.charge_start_level = 0 # Reset start level
                     if hasattr(self, 'last_charge_time'):
                         delattr(self, 'last_charge_time')
                     print(f"[BATTERY] Charging complete after {total_charge_time:.1f} seconds. Resuming normal operations.")
@@ -208,15 +212,37 @@ class BatteryManager:
                 elapsed = time.time() - self.returning_start_time
                 status["return_progress"] = min(100, (elapsed / self.time_to_return) * 100)
                 status["return_time_left"] = max(0, self.time_to_return - elapsed)
-            
-            if self.charging and self.charging_start_time:
+                status["charge_progress"] = 0
+                status["charge_time_left"] = 0
+
+            if self.charging and self.charging_start_time  is not None:
                 elapsed = time.time() - self.charging_start_time
-                percent_to_charge = 80 - max(self.threshold, self.level)  # How much we need to charge
-                total_expected_time = (percent_to_charge / self.charging_rate)
-                status["charge_progress"] = min(100, (elapsed / total_expected_time) * 100)
-                status["charge_time_left"] = max(0, total_expected_time - elapsed)
+                percent_needed_total = 80 - self.charge_start_level
+                percent_gained_so_far = self.level - self.charge_start_level
+                if percent_needed_total > 0: # Avoid division by zero if started >= 80%
+                     status["charge_progress"] = min(100, (percent_gained_so_far / percent_needed_total) * 100)
+                     # Calculate time left based on current level to 80%
+                     percent_remaining_to_80 = 80 - self.level
+                     status["charge_time_left"] = max(0, percent_remaining_to_80 / self.charging_rate)
+                else:
+                    status["charge_progress"] = 100
+                    status["charge_time_left"] = 0
             
+            elif self.charging and self.charging_start_time is None:
+                 # Charging state entered, but start time not set yet (brief moment)
+                 status["charge_progress"] = 0
+                 status["charge_time_left"] = 0
+
+            else:
+                 # Not returning and not charging
+                 status["return_progress"] = 0
+                 status["return_time_left"] = 0
+                 status["charge_progress"] = 0
+                 status["charge_time_left"] = 0
+
+
             return status
+
 
 
 class DroneClient:
@@ -278,7 +304,8 @@ class DroneGUI:
         
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
-        self.blocked_nodes = set()
+        
+        self.battery_timestamps = []
         
         # Create tabs
         self.data_tab = ttk.Frame(self.tab_control)
@@ -429,31 +456,7 @@ class DroneGUI:
         row=2, column=0, sticky="w", padx=5, pady=5)
         self.latest_time_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
         self.latest_time_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
-    
-    # Action buttons section
-        action_frame = ttk.LabelFrame(right_frame, text="Actions", bootstyle="warning")
-        action_frame.pack(fill="x", padx=5, pady=5)
-    
-    # Action buttons
-        button_frame = ttk.Frame(action_frame)
-        button_frame.pack(fill="x", padx=10, pady=10)
-    
-    # Disconnect button
-        self.disconnect_btn = ttk.Button(button_frame, text="Disconnect Node", 
-                                   bootstyle="danger", state="disabled",
-                                   command=self.disconnect_selected_node)
-        self.disconnect_btn.pack(side="left", padx=5)
-    
-    # Refresh button
-        self.refresh_btn = ttk.Button(button_frame, text="Refresh Nodes", 
-                                bootstyle="info", command=self.refresh_nodes)
-        self.refresh_btn.pack(side="left", padx=5)
-    
-    # Clear selection button
-        self.clear_btn = ttk.Button(button_frame, text="Clear Selection", 
-                              bootstyle="secondary", state="disabled",
-                              command=self.clear_node_selection)
-        self.clear_btn.pack(side="left", padx=5)
+        
     
     # Bind treeview selection event
         self.nodes_tree.bind("<<TreeviewSelect>>", self.on_node_selected)
@@ -1033,9 +1036,6 @@ class DroneGUI:
         """Handle node selection in the treeview"""
         selection = self.nodes_tree.selection()
         if selection:
-        # Enable buttons when a node is selected
-            self.disconnect_btn.config(state="normal")
-            self.clear_btn.config(state="normal")
         
         # Get selected node ID
             node_id = self.nodes_tree.item(selection[0], "text")
@@ -1043,9 +1043,8 @@ class DroneGUI:
         # Update details panel
             self.update_node_details(node_id)
         else:
-        # Disable buttons when no node is selected
-            self.disconnect_btn.config(state="disabled")
-            self.clear_btn.config(state="disabled")
+            
+           self.clear_node_selection()
 
     def update_node_details(self, node_id):
         """Update the node details panel for selected node"""
@@ -1211,40 +1210,9 @@ class DroneGUI:
         self.latest_humid_value.config(text="N/A")
         self.latest_time_value.config(text="N/A")
     
-    # Disable action buttons
-        self.disconnect_btn.config(state="disabled")
-        self.clear_btn.config(state="disabled")
+    
 
-    def disconnect_selected_node(self):
-        """Disconnect the selected node"""
-        selection = self.nodes_tree.selection()
-        if not selection:
-            return
     
-        node_id = self.nodes_tree.item(selection[0], "text")
-    
-        if not self.connection_manager:
-            self.log_panel("ERROR: Connection manager not available")
-            return
-        
-
-    # Try to disconnect the node
-        
-        success = self.connection_manager.disconnect_node(node_id)
-    
-        if success:
-            self.log_panel(f"SUCCESS: Disconnected node {node_id}")
-        # Update the node's status in our data
-            if node_id in self.node_data:
-                self.node_data[node_id]["status"] = "Disconnected"
-        # Update the node in the tree
-            self.nodes_tree.item(selection[0], values=("Disconnected", self.node_data[node_id].get("last_seen", "N/A")))
-            self.nodes_tree.tag_configure("disconnected", foreground="#dc3545")
-            self.nodes_tree.item(selection[0], tags=("disconnected",))
-        # Update details panel
-            self.update_node_details(node_id)
-        else:
-            self.log_panel(f"WARNING: Failed to disconnect node {node_id}")
     
 class DroneServer:
     """Main drone server class that manages sensor connections, data processing, and server communication"""
