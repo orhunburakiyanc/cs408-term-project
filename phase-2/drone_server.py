@@ -242,6 +242,23 @@ class BatteryManager:
 
 
             return status
+        
+    
+
+    
+
+    def set_threshold(self, new_threshold):
+        """Sets a new low battery threshold.
+           Performs basic validation (5-50%).
+        """
+        with self.lock: # Ensure thread safety if called from different threads
+            if 5 <= new_threshold <= 50:
+                self.threshold = new_threshold
+                # No need to print here, the GUI method handles feedback
+            else:
+                 # This case should ideally be caught by GUI validation first,
+                 # but good to have a safeguard.
+                 print(f"[BATTERY] Attempted to set invalid threshold: {new_threshold}. Must be between 5 and 50.")
 
 
 
@@ -296,7 +313,7 @@ class DroneClient:
 class DroneGUI:
     """GUI for the drone to display data and status"""
     
-    def __init__(self, root):
+    def __init__(self, root,battery_manager_instance):
         # Initialize with ttkbootstrap style
         self.root = root
         self.root.title("Drone Edge Computing Unit")
@@ -306,6 +323,10 @@ class DroneGUI:
         self.tab_control = ttk.Notebook(root)
         
         self.battery_timestamps = []
+
+
+        self.battery_manager = battery_manager_instance
+        
         
         # Create tabs
         self.data_tab = ttk.Frame(self.tab_control)
@@ -343,6 +364,43 @@ class DroneGUI:
         
         # Alert banner for battery status
         self._setup_alert_banner()
+
+    # In your DroneGUI class:
+
+    def apply_threshold(self):
+        """Reads threshold from spinbox, validates, and updates BatteryManager."""
+        try:
+            new_threshold = int(self.threshold_spinbox.get())
+
+            if 5 <= new_threshold <= 50:
+            # Update the BatteryManager instance
+                self.battery_manager.set_threshold(new_threshold)
+
+            # Update the current threshold display label
+                self.current_threshold_label.config(text=f"Current: {self.battery_manager.threshold}%")
+
+                print(f"[GUI] Battery threshold updated to {new_threshold}%")
+            # Optional: Show a success message
+            # ttk.dialogs.Messagebox.ok("Success", f"Battery threshold set to {new_threshold}%.")
+
+            # Immediately update the plot to show the new threshold line
+                self._update_battery_plot()
+
+            else:
+            # Value is outside the allowed range
+                print(f"[GUI] Invalid threshold value entered: {new_threshold}. Must be between 5 and 50.")
+            # Optional: Show an error message
+            # ttk.dialogs.Messagebox.show_error("Error", "Threshold must be between 5% and 50%.")
+            # Reset spinbox to the current valid value
+                self.threshold_spinbox.set(self.battery_manager.threshold)
+
+        except ValueError:
+        # Input is not a valid integer
+            print(f"[GUI] Invalid input for threshold. Please enter a number.")
+        # Optional: Show an error message
+        # ttk.dialogs.Messagebox.show_error("Error", "Invalid input. Please enter a valid number.")
+        # Reset spinbox to the current valid value
+            self.threshold_spinbox.set(self.battery_manager.threshold)
 
     def _setup_nodes_tab(self):
         """Setup the nodes status tab in the GUI"""
@@ -636,7 +694,25 @@ class DroneGUI:
         self.return_status = ttk.Label(simulation_frame, text="Not returning to base", 
                                       font=("Helvetica", 10))
         self.return_status.pack(pady=5)
-    
+
+
+        # Threshold Setting Section
+        threshold_frame = ttk.Frame(self.battery_tab) # Or wherever you want this section
+        threshold_frame.pack(pady=10)
+
+        ttk.Label(threshold_frame, text="Set Low Battery Threshold (%):").pack(side="left", padx=5)
+
+        # Using Spinbox for restricted numerical input
+        self.threshold_spinbox = ttk.Spinbox(threshold_frame, from_=5, to=50, increment=1, width=5)
+        self.threshold_spinbox.set(self.battery_manager.threshold) # Set initial value from BatteryManager
+        self.threshold_spinbox.pack(side="left", padx=5)
+
+        ttk.Button(threshold_frame, text="Apply", command=self.apply_threshold, bootstyle="secondary").pack(side="left", padx=5)
+
+# You might also want a label to show the current applied threshold
+        self.current_threshold_label = ttk.Label(threshold_frame, text=f"Current: {self.battery_manager.threshold}%")
+        self.current_threshold_label.pack(side="left", padx=10)
+
     def draw_battery_indicator(self, level):
         """Draw a graphical battery indicator with improved design"""
         # Clear previous drawing
@@ -969,12 +1045,25 @@ class DroneGUI:
         """Update the battery history plot with improved styling"""
         if not self.battery_levels:
             return
-        
-        # Update data
+
+        # --- Step 1: Clear the previous threshold line if it exists ---
+        if hasattr(self, 'threshold_line') and self.threshold_line is not None:
+             try:
+                 self.threshold_line.remove() # Remove the old line from the axes
+                 # You can optionally delete the attribute if you want to be tidy,
+                 # but removing from the axes is the key part.
+                 # del self.threshold_line
+             except ValueError:
+                 # This can happen if the line was already removed for some reason.
+                 # It's generally safe to ignore, but you could log a warning.
+                 pass
+
+
+        # --- Step 2: Update battery history line data (your existing code) ---
         self.battery_line.set_data(range(len(self.battery_levels)), self.battery_levels)
         self.battery_ax.relim()
         self.battery_ax.autoscale_view()
-        
+
         # Set x-ticks - fewer labels for cleaner appearance
         n_ticks = min(5, len(self.battery_timestamps))
         if n_ticks > 0:
@@ -982,16 +1071,27 @@ class DroneGUI:
             tick_indices = range(0, len(self.battery_timestamps), step)
             self.battery_ax.set_xticks(tick_indices)
             self.battery_ax.set_xticklabels([self.battery_timestamps[i] for i in tick_indices], rotation=30)
-        
+        else:
+            self.battery_ax.set_xticks([]) # Clear ticks if no data
+
         # Set y range from 0 to max of 100 or slightly above current max
-        y_max = max(100, max(self.battery_levels) * 1.1) if self.battery_levels else 100
+        y_max = max(100, max(self.battery_levels) * 1.1 if self.battery_levels else 100)
         self.battery_ax.set_ylim(0, y_max)
-        
-        # Add threshold line with improved styling
-        if not hasattr(self, 'threshold_line'):
-            self.threshold_line = self.battery_ax.axhline(y=20, color='#dc3545', linestyle='--', 
-                                                        alpha=0.7, linewidth=1.5)
-        
+
+        # --- Step 3: Add the new threshold line using the current threshold ---
+        # This draws a new line at the correct y-position
+        # Ensure self.battery_manager is accessible (which should be fixed now)
+        try:
+            self.threshold_line = self.battery_ax.axhline(y=self.battery_manager.threshold,
+                                                          color='#dc3545', linestyle='--',
+                                                          alpha=0.7, linewidth=1.5, label='Threshold') # Added label for legend
+            # Optional: Add a legend to show the threshold line
+            # self.battery_ax.legend() # You might want a better place for legend setup
+
+        except AttributeError:
+            print("[PLOT ERROR] battery_manager or its threshold not available when trying to draw threshold line.")
+            self.threshold_line = None # Ensure the attribute exists even on error
+
         # Update layout and display
         self.battery_fig.tight_layout()
         self.battery_canvas_plot.draw()
@@ -1223,9 +1323,10 @@ class DroneServer:
         
         # Initialize components
         self.root = tk.Tk()
-        self.gui = DroneGUI(self.root)
+        
         self.edge_processor = EdgeProcessor()
         self.battery_manager = BatteryManager()
+        self.gui = DroneGUI(self.root,self.battery_manager)
         self.drone_client = DroneClient(server_ip, server_port, drone_id)
         
         # Server settings
@@ -1481,6 +1582,7 @@ class DroneServer:
             if last_state["returning_to_base"]:
                 self.battery_manager.charge()
             else:
+                print(f"[DEBUG _manage_battery] Battery level: {self.battery_manager.level:.1f}%, CONSUME threshold: {self.battery_manager.threshold:.1f}%")
                 returning = self.battery_manager.consume()
                 if returning:
                     self.log("Battery low! Drone returning to base.")
