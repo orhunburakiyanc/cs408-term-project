@@ -284,7 +284,7 @@ class DroneClient:
             self.connected = False
             return False
     
-    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level):
+    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level,status = "normal"):
         """Send processed data to the central server"""
         with self.lock:
             if not self.connected:
@@ -297,7 +297,8 @@ class DroneClient:
                 "average_temperature": avg_temp,
                 "average_humidity": avg_humidity,
                 "anomalies": anomalies,
-                "battery_level": battery_level
+                "battery_level": battery_level,
+                "status": status
             }
             
             try:
@@ -1638,10 +1639,19 @@ class DroneServer:
                 # Compute averages and get anomalies
                 avg_temp, avg_humidity = self.edge_processor.compute_averages()
                 anomalies = self.edge_processor.get_anomalies()
+
+                drone_status = "normal"    
+
+                if battery_status["charging"]:
+                    drone_status = "charging"
+
+                elif battery_status["returning_to_base"]:
+                    drone_status = "returning_to_base"
+
                 
                 # Send data to server
                 success = self.drone_client.send_to_server(
-                    avg_temp, avg_humidity, anomalies, battery_status["level"]
+                    avg_temp, avg_humidity, anomalies, battery_status["level"],status = drone_status
                 )
                 
                 # Update connection status in GUI
