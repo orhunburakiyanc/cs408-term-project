@@ -42,8 +42,7 @@ class EdgeProcessor:
             self.readings[sensor_id].append(sensor_data)
             
             # Keep only the last window_size readings
-            if len(self.readings[sensor_id]) > self.window_size:
-                self.readings[sensor_id] = self.readings[sensor_id][-self.window_size:]
+            
             
             # Check for anomalies
             self._check_anomalies(sensor_data)
@@ -133,14 +132,17 @@ class BatteryManager:
         self.returning_start_time = None
         self.charging_start_time = None
         self.time_to_return = time_to_return  # seconds it takes to return to base
-        self.time_to_charge = time_to_charge  # estimated seconds for full charge
         self.lock = threading.Lock()
+        self.charge_start_level = 0
+
+        
     
     def consume(self):
         """Simulate battery consumption"""
         with self.lock:
             if not self.charging and not self.returning_to_base:
                 self.level -= self.consumption_rate
+                self.level = max(0, self.level)
                 if self.level < self.threshold:
                     self.returning_to_base = True
                     self.returning_start_time = time.time()
@@ -161,11 +163,14 @@ class BatteryManager:
                     self.charging = True
                     self.charging_start_time = current_time
                     # Log arrival for debugging
+                    if not hasattr(self, 'last_charge_time'):
+                        self.last_charge_time = current_time
+                    self.charge_start_level = self.level
                     print(f"[BATTERY] Arrived at base after {time_elapsed:.1f} seconds, starting to charge")
                     return
             
             # If we're charging
-            if self.charging and self.level < 100:
+            if self.charging and self.level < 80:
                 # Calculate charge increase based on time elapsed since last check
                 if not hasattr(self, 'last_charge_time'):
                     self.last_charge_time = current_time
@@ -176,21 +181,19 @@ class BatteryManager:
                 # Calculate charge based on time elapsed and charging rate
                 # Charging rate is percent per second
                 charge_increase = time_elapsed * self.charging_rate
-                self.level = min(100, self.level + charge_increase)
+                self.level = min(80, self.level + charge_increase)
                 
-                # Calculate and display estimated time remaining
-                if self.level < 80:
-                    percent_remaining = 80 - self.level
-                    time_remaining = percent_remaining / self.charging_rate
-                    print(f"[BATTERY] Charging: {self.level:.1f}%, estimated time to 80%: {time_remaining:.1f} seconds")
+                #
+               
                 
                 # Once charged enough, allow operations to continue
-                if self.level >= 80:  # Charge to 80% before resuming operations
+                if self.charging and self.level >= 80:  # Charge to 80% before resuming operations
                     total_charge_time = current_time - self.charging_start_time
                     self.returning_to_base = False
                     self.charging = False
                     self.returning_start_time = None
                     self.charging_start_time = None
+                    self.charge_start_level = 0 # Reset start level
                     if hasattr(self, 'last_charge_time'):
                         delattr(self, 'last_charge_time')
                     print(f"[BATTERY] Charging complete after {total_charge_time:.1f} seconds. Resuming normal operations.")
@@ -209,15 +212,54 @@ class BatteryManager:
                 elapsed = time.time() - self.returning_start_time
                 status["return_progress"] = min(100, (elapsed / self.time_to_return) * 100)
                 status["return_time_left"] = max(0, self.time_to_return - elapsed)
-            
-            if self.charging and self.charging_start_time:
+                status["charge_progress"] = 0
+                status["charge_time_left"] = 0
+
+            if self.charging and self.charging_start_time  is not None:
                 elapsed = time.time() - self.charging_start_time
-                percent_to_charge = 80 - max(self.threshold, self.level)  # How much we need to charge
-                total_expected_time = (percent_to_charge / self.charging_rate)
-                status["charge_progress"] = min(100, (elapsed / total_expected_time) * 100)
-                status["charge_time_left"] = max(0, total_expected_time - elapsed)
+                percent_needed_total = 80 - self.charge_start_level
+                percent_gained_so_far = self.level - self.charge_start_level
+                if percent_needed_total > 0: # Avoid division by zero if started >= 80%
+                     status["charge_progress"] = min(100, (percent_gained_so_far / percent_needed_total) * 100)
+                     # Calculate time left based on current level to 80%
+                     percent_remaining_to_80 = 80 - self.level
+                     status["charge_time_left"] = max(0, percent_remaining_to_80 / self.charging_rate)
+                else:
+                    status["charge_progress"] = 100
+                    status["charge_time_left"] = 0
             
+            elif self.charging and self.charging_start_time is None:
+                 # Charging state entered, but start time not set yet (brief moment)
+                 status["charge_progress"] = 0
+                 status["charge_time_left"] = 0
+
+            else:
+                 # Not returning and not charging
+                 status["return_progress"] = 0
+                 status["return_time_left"] = 0
+                 status["charge_progress"] = 0
+                 status["charge_time_left"] = 0
+
+
             return status
+        
+    
+
+    
+
+    def set_threshold(self, new_threshold):
+        """Sets a new low battery threshold.
+           Performs basic validation (5-50%).
+        """
+        with self.lock: # Ensure thread safety if called from different threads
+            if 5 <= new_threshold <= 50:
+                self.threshold = new_threshold
+                # No need to print here, the GUI method handles feedback
+            else:
+                 # This case should ideally be caught by GUI validation first,
+                 # but good to have a safeguard.
+                 print(f"[BATTERY] Attempted to set invalid threshold: {new_threshold}. Must be between 5 and 50.")
+
 
 
 class DroneClient:
@@ -248,7 +290,7 @@ class DroneClient:
             if not self.connected:
                 if not self.connect():
                     return False
-
+            
             data = {
                 "drone_id": self.drone_id,
                 "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -258,7 +300,7 @@ class DroneClient:
                 "battery_level": battery_level,
                 "status": status
             }
-
+            
             try:
                 self.sock.sendall((json.dumps(data) + "\n").encode())
                 return True
@@ -269,11 +311,10 @@ class DroneClient:
 
 
 
-
 class DroneGUI:
     """GUI for the drone to display data and status"""
     
-    def __init__(self, root):
+    def __init__(self, root,battery_manager_instance):
         # Initialize with ttkbootstrap style
         self.root = root
         self.root.title("Drone Edge Computing Unit")
@@ -282,11 +323,18 @@ class DroneGUI:
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
         
+        self.battery_timestamps = []
+
+
+        self.battery_manager = battery_manager_instance
+        
+        
         # Create tabs
         self.data_tab = ttk.Frame(self.tab_control)
         self.charts_tab = ttk.Frame(self.tab_control)
         self.anomaly_tab = ttk.Frame(self.tab_control)
-        self.battery_tab = ttk.Frame(self.tab_control) 
+        self.battery_tab = ttk.Frame(self.tab_control)
+        self.nodes_tab = ttk.Frame(self.tab_control) 
         self.log_tab = ttk.Frame(self.tab_control)
         
         self.tab_control.add(self.data_tab, text="Data Stream")
@@ -294,6 +342,7 @@ class DroneGUI:
         self.tab_control.add(self.anomaly_tab, text="Anomalies")
         self.tab_control.add(self.battery_tab, text="Battery Status")
         self.tab_control.add(self.log_tab, text="Logs")
+        self.tab_control.add(self.nodes_tab, text="Nodes Status") 
         self.tab_control.pack(expand=1, fill="both")
         
         # Setting up the tabs
@@ -302,6 +351,7 @@ class DroneGUI:
         self._setup_anomaly_tab()
         self._setup_battery_tab()
         self._setup_log_tab()
+        self._setup_nodes_tab()
         
         # Battery info status bar
         self._setup_battery_display()
@@ -315,6 +365,167 @@ class DroneGUI:
         
         # Alert banner for battery status
         self._setup_alert_banner()
+
+    # In your DroneGUI class:
+
+    def apply_threshold(self):
+        """Reads threshold from spinbox, validates, and updates BatteryManager."""
+        try:
+            new_threshold = int(self.threshold_spinbox.get())
+
+            if 5 <= new_threshold <= 50:
+            # Update the BatteryManager instance
+                self.battery_manager.set_threshold(new_threshold)
+
+            # Update the current threshold display label
+                self.current_threshold_label.config(text=f"Current: {self.battery_manager.threshold}%")
+
+                print(f"[GUI] Battery threshold updated to {new_threshold}%")
+            # Optional: Show a success message
+            # ttk.dialogs.Messagebox.ok("Success", f"Battery threshold set to {new_threshold}%.")
+
+            # Immediately update the plot to show the new threshold line
+                self._update_battery_plot()
+
+            else:
+            # Value is outside the allowed range
+                print(f"[GUI] Invalid threshold value entered: {new_threshold}. Must be between 5 and 50.")
+            # Optional: Show an error message
+            # ttk.dialogs.Messagebox.show_error("Error", "Threshold must be between 5% and 50%.")
+            # Reset spinbox to the current valid value
+                self.threshold_spinbox.set(self.battery_manager.threshold)
+
+        except ValueError:
+        # Input is not a valid integer
+            print(f"[GUI] Invalid input for threshold. Please enter a number.")
+        # Optional: Show an error message
+        # ttk.dialogs.Messagebox.show_error("Error", "Invalid input. Please enter a valid number.")
+        # Reset spinbox to the current valid value
+            self.threshold_spinbox.set(self.battery_manager.threshold)
+
+    def _setup_nodes_tab(self):
+        """Setup the nodes status tab in the GUI"""
+    # Main container frame
+        nodes_frame = ttk.Frame(self.nodes_tab)
+        nodes_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Create a left and right panel using paned window
+        paned = ttk.PanedWindow(nodes_frame, orient="horizontal")
+        paned.pack(fill="both", expand=True)
+    
+    # Left panel - Nodes list
+        left_frame = ttk.LabelFrame(paned, text="Connected Sensor Nodes", bootstyle="info")
+    
+    # Create treeview for nodes list with bootstyle
+        self.nodes_tree = ttk.Treeview(left_frame, columns=("Status", "Last Seen"), 
+                                  bootstyle="info")
+        self.nodes_tree.heading("#0", text="Sensor ID")
+        self.nodes_tree.heading("Status", text="Status")
+        self.nodes_tree.heading("Last Seen", text="Last Seen")
+    
+        self.nodes_tree.column("#0", width=120, stretch=tk.YES)
+        self.nodes_tree.column("Status", width=80, stretch=tk.YES)
+        self.nodes_tree.column("Last Seen", width=150, stretch=tk.YES)
+    
+    # Add scrollbar
+        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.nodes_tree.yview)
+        self.nodes_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.nodes_tree.pack(side="left", fill="both", expand=True)
+    
+    # Add nodes tree to paned window
+        paned.add(left_frame, weight=1)
+    
+    # Right panel - Node details and actions
+        right_frame = ttk.Frame(paned)
+        right_frame.pack(fill="both", expand=True)
+        paned.add(right_frame, weight=2)
+    
+    # Node details section
+        details_frame = ttk.LabelFrame(right_frame, text="Node Details", bootstyle="primary")
+        details_frame.pack(fill="both", expand=True, padx=5, pady=5)
+    
+    # Details grid
+        details_grid = ttk.Frame(details_frame)
+        details_grid.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Node ID
+        ttk.Label(details_grid, text="Node ID:", font=("Helvetica", 10, "bold")).grid(
+            row=0, column=0, sticky="w", padx=5, pady=5)
+        self.node_id_value = ttk.Label(details_grid, text="Select a node", font=("Helvetica", 10))
+        self.node_id_value.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    
+    # Connection status
+        ttk.Label(details_grid, text="Connection:", font=("Helvetica", 10, "bold")).grid(
+            row=1, column=0, sticky="w", padx=5, pady=5)
+        self.node_status_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_status_value.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+    
+    # Last seen
+        ttk.Label(details_grid, text="Last Activity:", font=("Helvetica", 10, "bold")).grid(
+        row=2, column=0, sticky="w", padx=5, pady=5)
+        self.node_lastseen_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_lastseen_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+    
+    # Data statistics
+        ttk.Label(details_grid, text="Data Count:", font=("Helvetica", 10, "bold")).grid(
+        row=3, column=0, sticky="w", padx=5, pady=5)
+        self.node_datacount_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_datacount_value.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+    
+    # Temperature range
+        ttk.Label(details_grid, text="Temp Range:", font=("Helvetica", 10, "bold")).grid(
+        row=4, column=0, sticky="w", padx=5, pady=5)
+        self.node_temprange_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_temprange_value.grid(row=4, column=1, sticky="w", padx=5, pady=5)
+    
+    # Humidity range
+        ttk.Label(details_grid, text="Humidity Range:", font=("Helvetica", 10, "bold")).grid(
+        row=5, column=0, sticky="w", padx=5, pady=5)
+        self.node_humidrange_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_humidrange_value.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+    
+    # Anomaly count
+        tk.Label(details_grid, text="Anomalies:", font=("Helvetica", 10, "bold")).grid(
+        row=6, column=0, sticky="w", padx=5, pady=5)
+        self.node_anomalies_value = ttk.Label(details_grid, text="N/A", font=("Helvetica", 10))
+        self.node_anomalies_value.grid(row=6, column=1, sticky="w", padx=5, pady=5)
+    
+    # Latest reading section
+        latest_frame = ttk.LabelFrame(right_frame, text="Latest Reading", bootstyle="success")
+        latest_frame.pack(fill="x", padx=5, pady=5)
+    
+        latest_grid = ttk.Frame(latest_frame)
+        latest_grid.pack(fill="both", expand=True, padx=10, pady=10)
+    
+    # Temperature
+        ttk.Label(latest_grid, text="Temperature:", font=("Helvetica", 10, "bold")).grid(
+        row=0, column=0, sticky="w", padx=5, pady=5)
+        self.latest_temp_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_temp_value.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    
+    # Humidity
+        ttk.Label(latest_grid, text="Humidity:", font=("Helvetica", 10, "bold")).grid(
+        row=1, column=0, sticky="w", padx=5, pady=5)
+        self.latest_humid_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_humid_value.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+    
+    # Timestamp
+        ttk.Label(latest_grid, text="Timestamp:", font=("Helvetica", 10, "bold")).grid(
+        row=2, column=0, sticky="w", padx=5, pady=5)
+        self.latest_time_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
+        self.latest_time_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        
+    
+    # Bind treeview selection event
+        self.nodes_tree.bind("<<TreeviewSelect>>", self.on_node_selected)
+    
+    # Initialize node data storage
+        self.node_data = {}  # Dictionary to store node data and statistics
+    
+    # Store reference to connection_manager and edge_processor (to be set later)
+        self.connection_manager = None
+        self.edge_processor = None
     
     def _setup_data_tab(self):
         # Create a frame for the data table
@@ -484,7 +695,25 @@ class DroneGUI:
         self.return_status = ttk.Label(simulation_frame, text="Not returning to base", 
                                       font=("Helvetica", 10))
         self.return_status.pack(pady=5)
-    
+
+
+        # Threshold Setting Section
+        threshold_frame = ttk.Frame(self.battery_tab) # Or wherever you want this section
+        threshold_frame.pack(pady=10)
+
+        ttk.Label(threshold_frame, text="Set Low Battery Threshold (%):").pack(side="left", padx=5)
+
+        # Using Spinbox for restricted numerical input
+        self.threshold_spinbox = ttk.Spinbox(threshold_frame, from_=5, to=50, increment=1, width=5)
+        self.threshold_spinbox.set(self.battery_manager.threshold) # Set initial value from BatteryManager
+        self.threshold_spinbox.pack(side="left", padx=5)
+
+        ttk.Button(threshold_frame, text="Apply", command=self.apply_threshold, bootstyle="secondary").pack(side="left", padx=5)
+
+# You might also want a label to show the current applied threshold
+        self.current_threshold_label = ttk.Label(threshold_frame, text=f"Current: {self.battery_manager.threshold}%")
+        self.current_threshold_label.pack(side="left", padx=10)
+
     def draw_battery_indicator(self, level):
         """Draw a graphical battery indicator with improved design"""
         # Clear previous drawing
@@ -817,12 +1046,25 @@ class DroneGUI:
         """Update the battery history plot with improved styling"""
         if not self.battery_levels:
             return
-        
-        # Update data
+
+        # --- Step 1: Clear the previous threshold line if it exists ---
+        if hasattr(self, 'threshold_line') and self.threshold_line is not None:
+             try:
+                 self.threshold_line.remove() # Remove the old line from the axes
+                 # You can optionally delete the attribute if you want to be tidy,
+                 # but removing from the axes is the key part.
+                 # del self.threshold_line
+             except ValueError:
+                 # This can happen if the line was already removed for some reason.
+                 # It's generally safe to ignore, but you could log a warning.
+                 pass
+
+
+        # --- Step 2: Update battery history line data (your existing code) ---
         self.battery_line.set_data(range(len(self.battery_levels)), self.battery_levels)
         self.battery_ax.relim()
         self.battery_ax.autoscale_view()
-        
+
         # Set x-ticks - fewer labels for cleaner appearance
         n_ticks = min(5, len(self.battery_timestamps))
         if n_ticks > 0:
@@ -830,16 +1072,27 @@ class DroneGUI:
             tick_indices = range(0, len(self.battery_timestamps), step)
             self.battery_ax.set_xticks(tick_indices)
             self.battery_ax.set_xticklabels([self.battery_timestamps[i] for i in tick_indices], rotation=30)
-        
+        else:
+            self.battery_ax.set_xticks([]) # Clear ticks if no data
+
         # Set y range from 0 to max of 100 or slightly above current max
-        y_max = max(100, max(self.battery_levels) * 1.1) if self.battery_levels else 100
+        y_max = max(100, max(self.battery_levels) * 1.1 if self.battery_levels else 100)
         self.battery_ax.set_ylim(0, y_max)
-        
-        # Add threshold line with improved styling
-        if not hasattr(self, 'threshold_line'):
-            self.threshold_line = self.battery_ax.axhline(y=20, color='#dc3545', linestyle='--', 
-                                                        alpha=0.7, linewidth=1.5)
-        
+
+        # --- Step 3: Add the new threshold line using the current threshold ---
+        # This draws a new line at the correct y-position
+        # Ensure self.battery_manager is accessible (which should be fixed now)
+        try:
+            self.threshold_line = self.battery_ax.axhline(y=self.battery_manager.threshold,
+                                                          color='#dc3545', linestyle='--',
+                                                          alpha=0.7, linewidth=1.5, label='Threshold') # Added label for legend
+            # Optional: Add a legend to show the threshold line
+            # self.battery_ax.legend() # You might want a better place for legend setup
+
+        except AttributeError:
+            print("[PLOT ERROR] battery_manager or its threshold not available when trying to draw threshold line.")
+            self.threshold_line = None # Ensure the attribute exists even on error
+
         # Update layout and display
         self.battery_fig.tight_layout()
         self.battery_canvas_plot.draw()
@@ -873,6 +1126,195 @@ class DroneGUI:
         self.log_text.insert(tk.END, log_entry, tag)
         self.log_text.see(tk.END)  # Auto-scroll to the latest log
 
+    # Add these helper methods to DroneGUI class
+
+    def set_connection_manager(self, connection_manager, edge_processor):
+        """Set the connection manager for node operations"""
+        self.connection_manager = connection_manager
+        self.edge_processor = edge_processor
+
+    def on_node_selected(self, event):
+        """Handle node selection in the treeview"""
+        selection = self.nodes_tree.selection()
+        if selection:
+        
+        # Get selected node ID
+            node_id = self.nodes_tree.item(selection[0], "text")
+        
+        # Update details panel
+            self.update_node_details(node_id)
+        else:
+            
+           self.clear_node_selection()
+
+    def update_node_details(self, node_id):
+        """Update the node details panel for selected node"""
+        if node_id not in self.node_data:
+            self.node_id_value.config(text=node_id)
+            self.node_status_value.config(text="Unknown")
+            return
+    
+    # Get node data
+        node_info = self.node_data[node_id]
+    
+    # Update labels
+        self.node_id_value.config(text=node_id)
+        self.node_status_value.config(text=node_info.get("status", "Unknown"))
+        self.node_lastseen_value.config(text=node_info.get("last_seen", "N/A"))
+        self.node_datacount_value.config(text=str(node_info.get("data_count", 0)))
+    
+    # Calculate temperature range
+        if "min_temp" in node_info and "max_temp" in node_info:
+            temp_range = f"{node_info['min_temp']:.1f}°C - {node_info['max_temp']:.1f}°C"
+            self.node_temprange_value.config(text=temp_range)
+    
+    # Calculate humidity range
+        if "min_humid" in node_info and "max_humid" in node_info:
+            humid_range = f"{node_info['min_humid']:.1f}% - {node_info['max_humid']:.1f}%"
+            self.node_humidrange_value.config(text=humid_range)
+    
+    # Count anomalies for this node
+        anomaly_count = 0
+        for anomaly in self.edge_processor.get_anomalies():
+            if anomaly["sensor_id"] == node_id:
+                anomaly_count += 1
+        self.node_anomalies_value.config(text=str(anomaly_count))
+    
+    # Latest reading
+        if "latest_reading" in node_info:
+            latest = node_info["latest_reading"]
+            self.latest_temp_value.config(text=f"{latest['temperature']:.1f}°C")
+            self.latest_humid_value.config(text=f"{latest['humidity']:.1f}%")
+            self.latest_time_value.config(text=latest["timestamp"])
+        
+        # Set color based on anomaly status
+            if latest["temperature"] > self.edge_processor.temp_threshold_high or \
+                latest["temperature"] < self.edge_processor.temp_threshold_low:
+                self.latest_temp_value.config(bootstyle="danger")
+            else:
+                self.latest_temp_value.config(bootstyle="success")
+            
+            if latest["humidity"] > self.edge_processor.humidity_threshold_high or \
+                latest["humidity"] < self.edge_processor.humidity_threshold_low:
+                self.latest_humid_value.config(bootstyle="danger")
+            else:
+                self.latest_humid_value.config(bootstyle="success")
+
+    def update_nodes(self):
+        """Update the nodes status tab with current data"""
+        # Skip if necessary references aren't set yet
+        if not hasattr(self, 'edge_processor') or not self.edge_processor:
+            return
+        
+    # Get all readings from edge processor
+        readings = self.edge_processor.get_readings()
+    
+    # Process readings to update node data
+        now = datetime.datetime.now()
+    
+        for sensor_id, sensor_readings in readings.items():
+            if not sensor_readings:
+                continue
+            
+        # Create entry for new node
+            if sensor_id not in self.node_data:
+                self.node_data[sensor_id] = {
+                    "status": "Connected",
+                    "data_count": 0,
+                    "min_temp": float('inf'),
+                    "max_temp": float('-inf'),
+                    "min_humid": float('inf'),
+                    "max_humid": float('-inf')
+                }
+        
+        # Update node data
+            latest_reading = sensor_readings[-1]
+            self.node_data[sensor_id]["latest_reading"] = latest_reading
+            self.node_data[sensor_id]["last_seen"] = latest_reading["timestamp"]
+            self.node_data[sensor_id]["data_count"] = len(sensor_readings)
+        
+        # Update min/max values
+            for reading in sensor_readings:
+                temp = reading["temperature"]
+                humid = reading["humidity"]
+            
+                self.node_data[sensor_id]["min_temp"] = min(self.node_data[sensor_id]["min_temp"], temp)
+                self.node_data[sensor_id]["max_temp"] = max(self.node_data[sensor_id]["max_temp"], temp)
+                self.node_data[sensor_id]["min_humid"] = min(self.node_data[sensor_id]["min_humid"], humid)
+                self.node_data[sensor_id]["max_humid"] = max(self.node_data[sensor_id]["max_humid"], humid)
+    
+    # Update treeview
+    # First, save current selection
+        selected_items = self.nodes_tree.selection()
+        selected_ids = [self.nodes_tree.item(item, "text") for item in selected_items]
+    
+    # Clear treeview
+        for item in self.nodes_tree.get_children():
+            self.nodes_tree.delete(item)
+    
+    # Add nodes to treeview
+        for node_id, node_info in self.node_data.items():
+        # Format last seen time
+            last_seen = node_info.get("last_seen", "N/A")
+        
+        # Check if the node is still connected
+            is_connected = False
+            if self.connection_manager:
+                is_connected = node_id in self.connection_manager.node_to_addr and \
+                           self.connection_manager.node_to_addr[node_id] in self.connection_manager.active_connections
+        
+        # Update status
+            status = "Connected" if is_connected else "Disconnected"
+            node_info["status"] = status
+        
+        # Insert into treeview with appropriate status color
+            item = self.nodes_tree.insert("", "end", text=node_id, 
+                                    values=(status, last_seen),
+                                    tags=(status.lower(),))
+        
+        # Apply color to status
+            if status == "Connected":
+                self.nodes_tree.tag_configure("connected", foreground="#28a745")
+            else:
+                self.nodes_tree.tag_configure("disconnected", foreground="#dc3545")
+    
+    # Restore selection if items still exist
+        for node_id in selected_ids:
+            for item in self.nodes_tree.get_children():
+                if self.nodes_tree.item(item, "text") == node_id:
+                    self.nodes_tree.selection_add(item)
+                    break
+    
+    # Update details if a node is selected
+        if self.nodes_tree.selection():
+            selected_node = self.nodes_tree.item(self.nodes_tree.selection()[0], "text")
+            self.update_node_details(selected_node)
+
+    def refresh_nodes(self):
+        """Refresh the nodes list"""
+        self.update_nodes()
+        self.log_panel("SUCCESS: Refreshed nodes list")
+
+    def clear_node_selection(self):
+        """Clear the selected node"""
+        self.nodes_tree.selection_remove(self.nodes_tree.selection())
+    
+    # Reset detail fields
+        self.node_id_value.config(text="Select a node")
+        self.node_status_value.config(text="N/A")
+        self.node_lastseen_value.config(text="N/A")
+        self.node_datacount_value.config(text="N/A")
+        self.node_temprange_value.config(text="N/A")
+        self.node_humidrange_value.config(text="N/A")
+        self.node_anomalies_value.config(text="N/A")
+        self.latest_temp_value.config(text="N/A")
+        self.latest_humid_value.config(text="N/A")
+        self.latest_time_value.config(text="N/A")
+    
+    
+
+    
+    
 class DroneServer:
     """Main drone server class that manages sensor connections, data processing, and server communication"""
     
@@ -882,9 +1324,10 @@ class DroneServer:
         
         # Initialize components
         self.root = tk.Tk()
-        self.gui = DroneGUI(self.root)
+        
         self.edge_processor = EdgeProcessor()
         self.battery_manager = BatteryManager()
+        self.gui = DroneGUI(self.root,self.battery_manager)
         self.drone_client = DroneClient(server_ip, server_port, drone_id)
         
         # Server settings
@@ -897,6 +1340,17 @@ class DroneServer:
         self.data_queue = Queue(maxsize=100)  # Buffer for incoming sensor data
         self.active_connections = {}  # Track active sensor connections
         self.connection_lock = threading.Lock()
+
+        self.connection_manager = ConnectionManager(
+        self.active_connections, 
+        self.connection_lock,
+        logger=self.log
+        )
+
+         # After initializing connection_manager
+        self.gui.set_connection_manager(self.connection_manager, self.edge_processor)
+
+        
         
         # Start the server
         self.log("Drone server initializing...")
@@ -904,6 +1358,32 @@ class DroneServer:
         self.processor_thread = threading.Thread(target=self._process_data)
         self.battery_thread = threading.Thread(target=self._manage_battery)
         self.server_comm_thread = threading.Thread(target=self._communicate_with_server)
+        self.nodes_update_thread = threading.Thread(target=self._update_nodes_status)
+
+    def _update_nodes_status(self):
+        """Thread to periodically update node status information"""
+        while self.server_running:
+            try:
+            # Update nodes tab (only if not returning to base)
+                battery_status = self.battery_manager.check_status()
+                if not battery_status["returning_to_base"]:
+                # Use after method to safely update UI from another thread
+                    self.root.after(0, self.gui.update_nodes)
+            
+            # Refresh nodes list periodically
+                if hasattr(self, 'refresh_counter'):
+                    self.refresh_counter += 1
+                # Refresh every 10 iterations (10 seconds if sleep is 1s)
+                    if self.refresh_counter >= 10:
+                        self.root.after(0, self.gui.refresh_nodes)
+                        self.refresh_counter = 0
+                else:
+                    self.refresh_counter = 0
+                
+            except Exception as e:
+                self.log(f"Error updating nodes status: {e}")
+        
+            time.sleep(1)  # Update every second
     
     def start(self):
         """Start all threads and the main GUI loop"""
@@ -920,6 +1400,10 @@ class DroneServer:
         
         self.server_comm_thread.daemon = True
         self.server_comm_thread.start()
+
+        # Start the nodes update thread
+        self.nodes_update_thread.daemon = True
+        self.nodes_update_thread.start()
         
         self.log("Drone server started and ready for sensor connections")
         self.root.protocol("WM_DELETE_WINDOW", self.stop)  # Handle window close
@@ -996,6 +1480,7 @@ class DroneServer:
     
     def _handle_client(self, client_socket, addr):
         """Handle communication with a connected sensor node"""
+        sensor_id = None
         try:
             # Add to active connections
             with self.connection_lock:
@@ -1025,7 +1510,13 @@ class DroneServer:
                     line, buffer = buffer.split('\n', 1)
                     try:
                         sensor_data = json.loads(line)
-                        self.log(f"Received data from sensor {sensor_data.get('sensor_id')}")
+                        current_sensor_id = sensor_data.get('sensor_id')
+
+                        if current_sensor_id and (not sensor_id or sensor_id != current_sensor_id):
+                            sensor_id = current_sensor_id
+                            self.connection_manager.register_node(sensor_id, addr)
+                    
+                        self.log(f"Received data from sensor {sensor_id}")
                         
                         # Add to processing queue
                         try:
@@ -1092,6 +1583,7 @@ class DroneServer:
             if last_state["returning_to_base"]:
                 self.battery_manager.charge()
             else:
+                print(f"[DEBUG _manage_battery] Battery level: {self.battery_manager.level:.1f}%, CONSUME threshold: {self.battery_manager.threshold:.1f}%")
                 returning = self.battery_manager.consume()
                 if returning:
                     self.log("Battery low! Drone returning to base.")
@@ -1137,9 +1629,8 @@ class DroneServer:
         """Periodically send data to the central server"""
         while self.server_running:
             try:
-                # Always check battery status
+                # Check if we should be sending data
                 battery_status = self.battery_manager.check_status()
-
                 # Default values
                 avg_temp = None
                 avg_humidity = None
@@ -1157,30 +1648,87 @@ class DroneServer:
                     drone_status = "normal"
 
                 # Always try to send something, even when returning or charging
+                
+                
+                # Send data to server
                 success = self.drone_client.send_to_server(
                     avg_temp, 
                     avg_humidity, 
                     anomalies, 
                     battery_status["level"],
                     status=drone_status  # <-- New status field
-                )
-
-                # Update GUI connection status
+                    )
+                
+                # Update connection status in GUI
                 self.root.after(0, self.gui.update_connection_status, success)
-
+                
                 if success:
                     self.log(f"Data sent to central server successfully (Status: {drone_status})")
                 else:
                     self.log("Failed to send data to central server")
-
+                
                 time.sleep(5)  # Send data every 5 seconds
-
+            
             except Exception as e:
                 self.log(f"Error communicating with server: {e}")
                 time.sleep(5)
 
-
-
+class ConnectionManager:
+    """Manages connections to sensor nodes with ability to disconnect specific nodes"""
+    
+    def __init__(self, active_connections, connection_lock, logger=None):
+        """Initialize the connection manager
+        
+        Args:
+            active_connections: Dictionary of active connections {addr: socket}
+            connection_lock: Threading lock for safe access to connections
+            logger: Optional function for logging
+        """
+        self.active_connections = active_connections
+        self.connection_lock = connection_lock
+        self.logger = logger or print
+        self.node_to_addr = {}  # Map sensor_id to address
+    
+    def register_node(self, sensor_id, addr):
+        """Register a node ID with its connection address"""
+        with self.connection_lock:
+            self.node_to_addr[sensor_id] = addr
+            self.logger(f"Registered node {sensor_id} at {addr}")
+    
+    def disconnect_node(self, sensor_id):
+        """Disconnect a specific node by sensor ID
+        
+        Returns:
+            bool: True if successfully disconnected, False otherwise
+        """
+        with self.connection_lock:
+            # Find the address for this sensor ID
+            addr = self.node_to_addr.get(sensor_id)
+            if not addr:
+                self.logger(f"Cannot disconnect node {sensor_id}: address not found")
+                return False
+            
+            # Check if the connection is still active
+            if addr not in self.active_connections:
+                self.logger(f"Cannot disconnect node {sensor_id}: connection not active")
+                return False
+            
+            # Get the socket
+            conn = self.active_connections.get(addr)
+            if not conn:
+                self.logger(f"Cannot disconnect node {sensor_id}: socket not found")
+                return False
+            
+            # Close the connection
+            try:
+                conn.close()
+                del self.active_connections[addr]
+                self.logger(f"Disconnected node {sensor_id} at {addr}")
+                return True
+            except Exception as e:
+                self.logger(f"Error disconnecting node {sensor_id}: {e}")
+                return False
+            
 if __name__ == "__main__":
     # Example usage:
     drone_server = DroneServer(
