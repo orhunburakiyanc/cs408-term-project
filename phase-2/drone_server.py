@@ -86,9 +86,7 @@ class EdgeProcessor:
         # Add anomaly if found
         if anomaly:
             self.anomalies.append(anomaly)
-            # Keep only recent anomalies (last 50)
-            if len(self.anomalies) > 50:
-                self.anomalies = self.anomalies[-50:]
+            
     
     def compute_averages(self):
         """Compute average temperature and humidity across all sensors"""
@@ -319,6 +317,9 @@ class DroneGUI:
         self.root = root
         self.root.title("Drone Edge Computing Unit")
         self.root.geometry("1000x800")
+
+        self.count = 0
+        
         
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
@@ -840,7 +841,8 @@ class DroneGUI:
     def update_table(self, sensor_data):
         """Update the data table with new sensor data"""
         # Get the count of existing items to generate a new index
-        index = len(self.data_tree.get_children()) + 1
+        self.count += 1
+        index = self.count
         
         # Insert new data
         self.data_tree.insert("", "end", text=str(index), 
@@ -853,8 +855,7 @@ class DroneGUI:
         if index > 100:
             self.data_tree.delete(self.data_tree.get_children()[0])
         
-        # Auto-scroll to the bottom
-        self.data_tree.yview_moveto(1)
+       
         
         # Update plot data
         current_time = datetime.datetime.strptime(sensor_data["timestamp"], 
@@ -917,6 +918,7 @@ class DroneGUI:
                                            anomaly["issue"],
                                            f"{anomaly['value']:.2f}",
                                            anomaly["timestamp"]))
+            
     
     def display_battery(self, battery_status):
         """Update the battery display"""
@@ -1174,6 +1176,7 @@ class DroneGUI:
             self.node_humidrange_value.config(text=humid_range)
     
     # Count anomalies for this node
+        
         anomaly_count = 0
         for anomaly in self.edge_processor.get_anomalies():
             if anomaly["sensor_id"] == node_id:
@@ -1583,7 +1586,6 @@ class DroneServer:
             if last_state["returning_to_base"]:
                 self.battery_manager.charge()
             else:
-                print(f"[DEBUG _manage_battery] Battery level: {self.battery_manager.level:.1f}%, CONSUME threshold: {self.battery_manager.threshold:.1f}%")
                 returning = self.battery_manager.consume()
                 if returning:
                     self.log("Battery low! Drone returning to base.")
