@@ -44,6 +44,7 @@ class EdgeProcessor:
             # Keep only the last window_size readings
             
             
+            
             # Check for anomalies
             self._check_anomalies(sensor_data)
     
@@ -86,9 +87,7 @@ class EdgeProcessor:
         # Add anomaly if found
         if anomaly:
             self.anomalies.append(anomaly)
-            # Keep only recent anomalies (last 50)
-            if len(self.anomalies) > 50:
-                self.anomalies = self.anomalies[-50:]
+            
     
     def compute_averages(self):
         """Compute average temperature and humidity across all sensors"""
@@ -136,12 +135,16 @@ class BatteryManager:
         self.charge_start_level = 0
 
         
+        self.charge_start_level = 0
+
+        
     
     def consume(self):
         """Simulate battery consumption"""
         with self.lock:
             if not self.charging and not self.returning_to_base:
                 self.level -= self.consumption_rate
+                self.level = max(0, self.level)
                 self.level = max(0, self.level)
                 if self.level < self.threshold:
                     self.returning_to_base = True
@@ -166,6 +169,9 @@ class BatteryManager:
                     if not hasattr(self, 'last_charge_time'):
                         self.last_charge_time = current_time
                     self.charge_start_level = self.level
+                    if not hasattr(self, 'last_charge_time'):
+                        self.last_charge_time = current_time
+                    self.charge_start_level = self.level
                     print(f"[BATTERY] Arrived at base after {time_elapsed:.1f} seconds, starting to charge")
                     return
             
@@ -181,13 +187,10 @@ class BatteryManager:
                 # Calculate charge based on time elapsed and charging rate
                 # Charging rate is percent per second
                 charge_increase = time_elapsed * self.charging_rate
-                self.level = min(80, self.level + charge_increase)
-                
-                #
-               
+                self.level = min(80, self.level + charge_increase)                               
                 
                 # Once charged enough, allow operations to continue
-                if self.charging and self.level >= 80:  # Charge to 80% before resuming operations
+                if self.charging and self.level >= 80:  # Charge to 80% before resuming operations                
                     total_charge_time = current_time - self.charging_start_time
                     self.returning_to_base = False
                     self.charging = False
@@ -319,6 +322,9 @@ class DroneGUI:
         self.root = root
         self.root.title("Drone Edge Computing Unit")
         self.root.geometry("1000x800")
+
+        self.count = 0
+        
         
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
@@ -840,7 +846,8 @@ class DroneGUI:
     def update_table(self, sensor_data):
         """Update the data table with new sensor data"""
         # Get the count of existing items to generate a new index
-        index = len(self.data_tree.get_children()) + 1
+        self.count += 1
+        index = self.count
         
         # Insert new data
         self.data_tree.insert("", "end", text=str(index), 
@@ -853,8 +860,7 @@ class DroneGUI:
         if index > 100:
             self.data_tree.delete(self.data_tree.get_children()[0])
         
-        # Auto-scroll to the bottom
-        self.data_tree.yview_moveto(1)
+       
         
         # Update plot data
         current_time = datetime.datetime.strptime(sensor_data["timestamp"], 
@@ -917,6 +923,7 @@ class DroneGUI:
                                            anomaly["issue"],
                                            f"{anomaly['value']:.2f}",
                                            anomaly["timestamp"]))
+            
     
     def display_battery(self, battery_status):
         """Update the battery display"""
@@ -1325,6 +1332,7 @@ class DroneServer:
         # Initialize components
         self.root = tk.Tk()
         
+        
         self.edge_processor = EdgeProcessor()
         self.battery_manager = BatteryManager()
         self.gui = DroneGUI(self.root,self.battery_manager)
@@ -1643,7 +1651,7 @@ class DroneServer:
                 avg_temp, avg_humidity = self.edge_processor.compute_averages()
                 anomalies = self.edge_processor.get_anomalies()
                 
-                # Send data to server regardless of drone status
+                # Send data to server
                 success = self.drone_client.send_to_server(
                     avg_temp, avg_humidity, anomalies, battery_status["level"], status=drone_status
                 )
