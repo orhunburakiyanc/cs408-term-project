@@ -9,6 +9,10 @@ import threading
 import datetime
 import time
 import argparse
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+import matplotlib.dates as mdates
 
 # Check if ttkbootstrap is available
 try:
@@ -20,19 +24,9 @@ except ImportError:
     USING_BOOTSTRAP = False
 
 class ServerGUI:
-    """
-    GUI for the central server in the environmental monitoring system.
-    Displays data received from drones including sensor readings, anomalies,
-    and system logs.
-    """
+    
 
     def __init__(self, root):
-        """
-        Initialize the GUI components.
-        
-        Args:
-            root: The tkinter root window
-        """
         self.root = root
         
         # Apply ttkbootstrap theme if available
@@ -50,6 +44,14 @@ class ServerGUI:
         self.drone_statuses = {}  # Store latest status for each drone
         self.drone_data = []  # Store all data entries
         self.anomalies = []  # Store all anomalies
+        
+        # Chart data storage
+        self.chart_data = {
+            "drone_ids": set(),
+            "timestamps": [],
+            "temperature": {},
+            "humidity": {}
+        }
         
         # Thread safety
         self.update_lock = threading.Lock()
@@ -82,10 +84,12 @@ class ServerGUI:
         # Create tab frames
         main_tab = ttk.Frame(self.notebook)
         data_logs_tab = ttk.Frame(self.notebook)
+        charts_tab = ttk.Frame(self.notebook)  # New charts tab
         
         # Add tabs to notebook
         self.notebook.add(main_tab, text="Main Dashboard")
         self.notebook.add(data_logs_tab, text="Data Logs")
+        self.notebook.add(charts_tab, text="Charts")  # Add charts tab
         
         # Configure main tab grid weights
         main_tab.grid_columnconfigure(0, weight=2)  # Left column (tables)
@@ -97,6 +101,10 @@ class ServerGUI:
         data_logs_tab.grid_columnconfigure(0, weight=1)
         data_logs_tab.grid_rowconfigure(0, weight=1)
         
+        # Configure charts tab grid weights
+        charts_tab.grid_columnconfigure(0, weight=1)
+        charts_tab.grid_rowconfigure(0, weight=1)
+        
         # Create panels in main tab
         self.setup_drone_status_panel(main_tab)
         self.setup_anomaly_panel(main_tab)
@@ -105,16 +113,324 @@ class ServerGUI:
         # Create data logs panel in data logs tab
         self.setup_data_logs_panel(data_logs_tab)
         
+        # Create charts panel in charts tab
+        self.setup_charts_panel(charts_tab)
+        
         # Setup status bar in main frame
         self.setup_status_bar(main_frame)
 
-    def setup_drone_status_panel(self, parent):
-        """
-        Create the drone status summary panel
+    def setup_charts_panel(self, parent):
+        """Set up the charts panel with temperature and humidity charts"""
+        # Create notebook for sub-tabs
+        self.charts_notebook = ttk.Notebook(parent)
+        self.charts_notebook.grid(row=0, column=0, sticky="nsew")
         
-        Args:
-            parent: Parent frame
-        """
+        # Create sub-tab frames
+        temp_tab = ttk.Frame(self.charts_notebook)
+        humidity_tab = ttk.Frame(self.charts_notebook)
+        
+        # Add sub-tabs to notebook
+        self.charts_notebook.add(temp_tab, text="Temperature")
+        self.charts_notebook.add(humidity_tab, text="Humidity")
+        
+        # Configure grid weights for sub-tabs
+        temp_tab.grid_columnconfigure(0, weight=1)
+        temp_tab.grid_rowconfigure(0, weight=1)
+        humidity_tab.grid_columnconfigure(0, weight=1)
+        humidity_tab.grid_rowconfigure(0, weight=1)
+        
+        # Prepare data storage for charts
+        self.chart_data = {
+            "timestamps": [],
+            "temperature": [],
+            "humidity": []
+        }
+        
+        # Setup chart frames
+        self.setup_temperature_chart(temp_tab)
+        self.setup_humidity_chart(humidity_tab)
+
+    def setup_temperature_chart(self, parent):
+        """Set up the temperature chart"""
+        # Create frame for chart with padding
+        if USING_BOOTSTRAP:
+            chart_frame = ttk.Labelframe(parent, text="Temperature Over Time", padding=10, bootstyle="primary")
+        else:
+            chart_frame = ttk.LabelFrame(parent, text="Temperature Over Time", padding=10)
+            
+        chart_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid weights
+        chart_frame.grid_columnconfigure(0, weight=1)
+        chart_frame.grid_rowconfigure(0, weight=1)
+        
+        # Create control frame for time range selection
+        control_frame = ttk.Frame(chart_frame)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        
+        # Add time range selector
+        ttk.Label(control_frame, text="Time Range:").pack(side="left", padx=5)
+        self.temp_timerange_var = tk.StringVar(value="Last Hour")
+        timerange_combo = ttk.Combobox(control_frame, textvariable=self.temp_timerange_var, 
+                                    values=["Last Hour", "Last 12 Hours", "Last 24 Hours", "All Data"])
+        timerange_combo.pack(side="left", padx=5)
+        
+        # Create matplotlib figure
+        self.temp_figure = Figure(figsize=(6, 4), dpi=100)
+        self.temp_plot = self.temp_figure.add_subplot(111)
+        self.temp_plot.set_title("Drone Temperature Readings")
+        self.temp_plot.set_xlabel("Time")
+        self.temp_plot.set_ylabel("Temperature (°C)")
+        self.temp_plot.grid(True)
+        
+        # Create canvas
+        self.temp_canvas = FigureCanvasTkAgg(self.temp_figure, master=chart_frame)
+        self.temp_canvas_widget = self.temp_canvas.get_tk_widget()
+        self.temp_canvas_widget.grid(row=0, column=0, sticky="nsew")
+        
+        # Bind changes to auto-update
+        self.temp_timerange_var.trace_add("write", lambda *args: self.update_temperature_chart())
+
+    def setup_humidity_chart(self, parent):
+        """Set up the humidity chart"""
+        # Create frame for chart with padding
+        if USING_BOOTSTRAP:
+            chart_frame = ttk.Labelframe(parent, text="Humidity Over Time", padding=10, bootstyle="info")
+        else:
+            chart_frame = ttk.LabelFrame(parent, text="Humidity Over Time", padding=10)
+            
+        chart_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid weights
+        chart_frame.grid_columnconfigure(0, weight=1)
+        chart_frame.grid_rowconfigure(0, weight=1)
+        
+        # Create control frame for time range selection
+        control_frame = ttk.Frame(chart_frame)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        
+        # Add time range selector
+        ttk.Label(control_frame, text="Time Range:").pack(side="left", padx=5)
+        self.humidity_timerange_var = tk.StringVar(value="Last Hour")
+        timerange_combo = ttk.Combobox(control_frame, textvariable=self.humidity_timerange_var, 
+                                    values=["Last Hour", "Last 12 Hours", "Last 24 Hours", "All Data"])
+        timerange_combo.pack(side="left", padx=5)
+        
+        # Create matplotlib figure
+        self.humidity_figure = Figure(figsize=(6, 4), dpi=100)
+        self.humidity_plot = self.humidity_figure.add_subplot(111)
+        self.humidity_plot.set_title("Drone Humidity Readings")
+        self.humidity_plot.set_xlabel("Time")
+        self.humidity_plot.set_ylabel("Humidity (%)")
+        self.humidity_plot.grid(True)
+        
+        # Create canvas
+        self.humidity_canvas = FigureCanvasTkAgg(self.humidity_figure, master=chart_frame)  
+        self.humidity_canvas_widget = self.humidity_canvas.get_tk_widget()
+        self.humidity_canvas_widget.grid(row=0, column=0, sticky="nsew")
+        
+        # Bind changes to auto-update
+        self.humidity_timerange_var.trace_add("write", lambda *args: self.update_humidity_chart())
+
+    def filter_chart_data(self, timerange):
+        """Filter chart data based on the selected time range"""
+        now = datetime.datetime.now()
+        
+        # Create empty result structure
+        result = {
+            "timestamps": [],
+            "temperature": [],
+            "humidity": []
+        }
+        
+        # If no data, return empty result
+        if not self.chart_data["timestamps"]:
+            return result
+        
+        # Define cutoff time based on selected time range
+        if timerange == "Last Hour":
+            cutoff = now - datetime.timedelta(hours=1)
+        elif timerange == "Last 12 Hours":
+            cutoff = now - datetime.timedelta(hours=12)
+        elif timerange == "Last 24 Hours":
+            cutoff = now - datetime.timedelta(hours=24)
+        else:  # All Data
+            cutoff = datetime.datetime.min
+        
+        # Process timestamps to datetime objects
+        valid_indices = []
+        for i, ts in enumerate(self.chart_data["timestamps"]):
+            try:
+                # Convert timestamp string to datetime object
+                if isinstance(ts, datetime.datetime):
+                    dt = ts
+                elif 'T' in ts:
+                    # ISO format handling
+                    if ts.endswith('Z'):
+                        dt = datetime.datetime.strptime(ts[:-1], "%Y-%m-%dT%H:%M:%S")
+                    else:
+                        dt = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+                else:
+                    # Try a simpler format
+                    dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                
+                # Include data point if it's after the cutoff time
+                if dt >= cutoff:
+                    valid_indices.append(i)
+                    result["timestamps"].append(dt)
+                
+            except (ValueError, TypeError) as e:
+                print(f"Error parsing timestamp '{ts}': {e}")
+        
+        # Extract temperature and humidity data for valid indices
+        for i in valid_indices:
+            if i < len(self.chart_data["temperature"]):
+                result["temperature"].append(self.chart_data["temperature"][i])
+            if i < len(self.chart_data["humidity"]):
+                result["humidity"].append(self.chart_data["humidity"][i])
+        
+        return result
+
+    def update_temperature_chart(self):
+        """Update the temperature chart with current data"""
+        # Clear the plot
+        self.temp_plot.clear()
+        
+        # Get selected time range
+        selected_timerange = self.temp_timerange_var.get()
+        
+        # Get filtered data based on time range
+        filtered_data = self.filter_chart_data(selected_timerange)
+        
+        if not filtered_data["timestamps"] or not filtered_data["temperature"]:
+            # No data to display
+            self.temp_plot.set_title("No Temperature Data Available")
+            self.temp_canvas.draw()
+            return
+        
+        # Get the dates from filtered data
+        dates = filtered_data["timestamps"]
+        
+        # Filter out None values
+        valid_points = [(dates[i], val) for i, val in enumerate(filtered_data["temperature"]) 
+                        if val is not None]
+        
+        if not valid_points:
+            self.temp_plot.set_title("No Valid Temperature Data")
+            self.temp_canvas.draw()
+            return
+        
+        # Unpack the valid points
+        plot_dates, plot_values = zip(*valid_points)
+        
+        # Plot the temperature data
+        self.temp_plot.plot(plot_dates, plot_values, 
+                        marker='o', linestyle='-', markersize=5, 
+                        color='#FF5733', label="Temperature")
+        
+        # Format the plot
+        self.temp_plot.set_title("Temperature Over Time")
+        self.temp_plot.set_xlabel("Time")
+        self.temp_plot.set_ylabel("Temperature (°C)")
+        self.temp_plot.grid(True)
+        
+        # Format date on x-axis
+        self.temp_plot.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        
+        # Set appropriate time interval on x-axis
+        if len(dates) > 20:
+            self.temp_plot.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+        
+        # Format y-axis with 1 decimal place
+        self.temp_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}"))
+        
+        # Adjust layout and redraw
+        self.temp_figure.tight_layout()
+        self.temp_canvas.draw()
+
+    def update_humidity_chart(self):
+        """Update the humidity chart with current data"""
+        # Clear the plot
+        self.humidity_plot.clear()
+        
+        # Get selected time range
+        selected_timerange = self.humidity_timerange_var.get()
+        
+        # Get filtered data based on time range
+        filtered_data = self.filter_chart_data(selected_timerange)
+        
+        if not filtered_data["timestamps"] or not filtered_data["humidity"]:
+            # No data to display
+            self.humidity_plot.set_title("No Humidity Data Available")
+            self.humidity_canvas.draw()
+            return
+        
+        # Get the dates from filtered data
+        dates = filtered_data["timestamps"]
+        
+        # Filter out None values
+        valid_points = [(dates[i], val) for i, val in enumerate(filtered_data["humidity"]) 
+                        if val is not None]
+        
+        if not valid_points:
+            self.humidity_plot.set_title("No Valid Humidity Data")
+            self.humidity_canvas.draw()
+            return
+        
+        # Unpack the valid points
+        plot_dates, plot_values = zip(*valid_points)
+        
+        # Plot the humidity data
+        self.humidity_plot.plot(plot_dates, plot_values, 
+                            marker='o', linestyle='-', markersize=5, 
+                            color='#3498DB', label="Humidity")
+        
+        # Format the plot
+        self.humidity_plot.set_title("Humidity Over Time")
+        self.humidity_plot.set_xlabel("Time")
+        self.humidity_plot.set_ylabel("Humidity (%)")
+        self.humidity_plot.grid(True)
+        
+        # Format date on x-axis
+        self.humidity_plot.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        
+        # Set appropriate time interval on x-axis
+        if len(dates) > 20:
+            self.humidity_plot.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+        
+        # Format y-axis with 1 decimal place
+        self.humidity_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.1f}"))
+        
+        # Adjust layout and redraw
+        self.humidity_figure.tight_layout()
+        self.humidity_canvas.draw()
+
+    def add_data_to_charts(self, drone_data):
+        """Add new data point to chart data storage"""
+        with self.update_lock:
+            # Extract timestamp - use received_at if available, otherwise use current time
+            timestamp = drone_data.get("timestamp", drone_data.get("received_at", datetime.datetime.now().isoformat()))
+            
+            # Extract temperature and humidity
+            temperature = drone_data.get("average_temperature")
+            humidity = drone_data.get("average_humidity")
+            
+            # Add data to chart data storage
+            self.chart_data["timestamps"].append(timestamp)
+            self.chart_data["temperature"].append(temperature)
+            self.chart_data["humidity"].append(humidity)
+            
+            # Limit data points to prevent memory issues (keep last 1000 points)
+            if len(self.chart_data["timestamps"]) > 1000:
+                self.chart_data["timestamps"].pop(0)
+                self.chart_data["temperature"].pop(0)
+                self.chart_data["humidity"].pop(0)
+        
+        # Update charts if needed
+        self.root.after(0, self.update_temperature_chart)
+        self.root.after(0, self.update_humidity_chart)
+
+    def setup_drone_status_panel(self, parent):        
         # Create frame with label and padding
         if USING_BOOTSTRAP:
             status_frame = ttk.Labelframe(parent, text="Drone Status Dashboard", padding=10, bootstyle="primary")
@@ -173,13 +489,7 @@ class ServerGUI:
             self.drone_table.tag_configure("normal", background="#ffffff")
             self.drone_table.tag_configure("anomaly", background="#ffffcc")
 
-    def setup_anomaly_panel(self, parent):
-        """
-        Create the anomaly display panel
-        
-        Args:
-            parent: Parent frame
-        """
+    def setup_anomaly_panel(self, parent):        
         # Create frame with label and padding
         if USING_BOOTSTRAP:
             anomaly_frame = ttk.Labelframe(parent, text="Anomaly Alerts", padding=10, bootstyle="danger")
@@ -234,13 +544,7 @@ class ServerGUI:
             self.anomaly_table.tag_configure("battery", background="#ffffcc")
             self.anomaly_table.tag_configure("connection", background="#dddddd")
 
-    def setup_data_logs_panel(self, parent):
-        """
-        Create the data logs panel to display all received data
-        
-        Args:
-            parent: Parent frame
-        """
+    def setup_data_logs_panel(self, parent):        
         # Create frame with label and padding
         if USING_BOOTSTRAP:
             data_logs_frame = ttk.Labelframe(parent, text="Data Logs", padding=10, bootstyle="primary")
@@ -302,13 +606,7 @@ class ServerGUI:
             self.data_logs_table.tag_configure("returning", background="#ffcc99")
             self.data_logs_table.tag_configure("charging", background="#ccffcc")
 
-    def setup_log_panel(self, parent):
-        """
-        Create the log display panel
-        
-        Args:
-            parent: Parent frame
-        """
+    def setup_log_panel(self, parent):        
         # Create frame with label and padding
         if USING_BOOTSTRAP:
             log_frame = ttk.Labelframe(parent, text="System Log", padding=10, bootstyle="info")
@@ -341,13 +639,7 @@ class ServerGUI:
         self.log_text.tag_configure("success", foreground="#20c997")  # Green for success
         self.log_text.tag_configure("timestamp", foreground="#6c757d")  # Gray for timestamps
 
-    def setup_status_bar(self, parent):
-        """
-        Create the status bar at the bottom
-        
-        Args:
-            parent: Parent frame
-        """
+    def setup_status_bar(self, parent):        
         # Create frame with padding and border
         if USING_BOOTSTRAP:
             status_bar = ttk.Frame(parent, padding=5, bootstyle="secondary")
@@ -389,25 +681,11 @@ class ServerGUI:
             
         exit_btn.pack(side=tk.RIGHT, padx=10)
 
-    def log(self, message, level='info'):
-        """
-        Add a message to the log panel
-        
-        Args:
-            message: Message text
-            level: Log level (info, warning, error, success)
-        """
+    def log(self, message, level='info'):        
         # Schedule GUI update to be thread-safe
         self.root.after(0, self._update_log, message, level)
 
-    def _update_log(self, message, level):
-        """
-        Update log in the GUI thread
-        
-        Args:
-            message: Message text
-            level: Log level
-        """
+    def _update_log(self, message, level):        
         # Get current time for timestamp
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
@@ -424,25 +702,11 @@ class ServerGUI:
         # Disable editing
         self.log_text.config(state=tk.DISABLED)
 
-    def update_server_status(self, status, active_connection_count):
-        """
-        Update the server status indicators
-        
-        Args:
-            status: Server status text
-            active_connection_count: Number of active connections
-        """
+    def update_server_status(self, status, active_connection_count):        
         # Schedule GUI update to be thread-safe
         self.root.after(0, self._update_status_display, status, active_connection_count)
 
-    def _update_status_display(self, status, active_connection_count):
-        """
-        Update status display in the GUI thread
-        
-        Args:
-            status: Server status text
-            active_connection_count: Number of active connections
-        """
+    def _update_status_display(self, status, active_connection_count):        
         # Update status label text
         self.status_label.config(text=status)
         
@@ -460,13 +724,7 @@ class ServerGUI:
         # Update connection count
         self.connection_count.config(text=str(active_connection_count))
 
-    def add_data_entry(self, drone_data):
-        """
-        Process a new data entry from a drone
-        
-        Args:
-            drone_data: Dictionary containing drone telemetry data
-        """
+    def add_data_entry(self, drone_data):        
         # Store data and update UI in a thread-safe way
         with self.update_lock:
             # Store data (up to 1000 entries)
@@ -488,17 +746,18 @@ class ServerGUI:
         # Get raw status from data
         raw_status = drone_data.get("status", "Connected")
         
-        # Standardize status format (convert snake_case to Title Case)
-        if "_" in raw_status:
-            status = " ".join(word.capitalize() for word in raw_status.split("_"))
-        else:
-            status = raw_status
-        
-        # Check for special status values
-        if status.lower() == "returning to base" or status.lower() == "returning_to_base":
+        # Check for special status values BEFORE standardizing format
+        if raw_status.lower() == "returning_to_base" or raw_status.lower() == "returning to base":
             status = "Returning To Base"
-        elif status.lower() == "charging":
+        elif raw_status.lower() == "charging":
             status = "Charging"
+        # Only standardize if not already handled by special cases
+        else:
+            # Standardize status format (convert snake_case to Title Case)
+            if "_" in raw_status:
+                status = " ".join(word.capitalize() for word in raw_status.split("_"))
+            else:
+                status = raw_status
         
         # Check for anomalies
         anomalies = drone_data.get("anomalies", [])
@@ -533,16 +792,12 @@ class ServerGUI:
         
         # Update drone status display
         self.root.after(0, self._update_drone_display, drone_data, status)
-
-    def _update_data_logs(self, drone_data, status, has_anomalies):
-        """
-        Update the data logs table with new data
         
-        Args:
-            drone_data: Dictionary containing drone telemetry data
-            status: Current drone status
-            has_anomalies: Boolean indicating if anomalies are present
-        """
+        # Add data to charts
+        if status not in ["Charging", "Returning To Base"]:
+            self.add_data_to_charts(drone_data)
+
+    def _update_data_logs(self, drone_data, status, has_anomalies):        
         # Extract data
         drone_id = drone_data.get("drone_id", "unknown")
         timestamp = drone_data.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -578,14 +833,7 @@ class ServerGUI:
         if len(children) > 1000:
             self.data_logs_table.delete(children[-1])
 
-    def _update_drone_display(self, drone_data, status=None):
-        """
-        Update the drone display table with new data
-        
-        Args:
-            drone_data: Dictionary containing drone telemetry data
-            status: Override status if provided
-        """
+    def _update_drone_display(self, drone_data, status=None):        
         # Extract data from the drone_data
         drone_id = drone_data.get("drone_id", "unknown")
         timestamp = drone_data.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -633,14 +881,7 @@ class ServerGUI:
         else:
             self.drone_table.insert("", tk.END, values=values, tags=(tag,))
 
-    def add_anomalies(self, drone_id, anomalies):
-        """
-        Add anomaly entries to the anomaly panel
-        
-        Args:
-            drone_id: ID of the drone reporting anomalies
-            anomalies: List of anomaly dictionaries
-        """
+    def add_anomalies(self, drone_id, anomalies):        
         if not anomalies:
             return
         
@@ -665,14 +906,7 @@ class ServerGUI:
             value = anomaly.get("value", 0)
             self.log(f"Anomaly detected on {drone_id}, sensor {sensor_id}: {issue} ({value})", "warning")
 
-    def _update_anomaly_display(self, drone_id, anomalies):
-        """
-        Update the anomaly display with new anomalies
-        
-        Args:
-            drone_id: ID of the drone reporting anomalies
-            anomalies: List of anomaly dictionaries
-        """
+    def _update_anomaly_display(self, drone_id, anomalies):        
         # Process each anomaly
         for anomaly in anomalies:
             # Extract data
@@ -706,17 +940,7 @@ class ServerGUI:
             if len(children) > 100:
                 self.anomaly_table.delete(children[-1])
 
-    def update_drone_status(self, drone_id, status, battery, temperature, humidity):
-        """
-        Update the stored status for a drone
-        
-        Args:
-            drone_id: ID of the drone
-            status: Current status text
-            battery: Battery level percentage
-            temperature: Average temperature
-            humidity: Average humidity
-        """
+    def update_drone_status(self, drone_id, status, battery, temperature, humidity):        
         # Get current timestamp
         timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
         
