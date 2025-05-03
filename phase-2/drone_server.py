@@ -1629,35 +1629,30 @@ class DroneServer:
         """Periodically send data to the central server"""
         while self.server_running:
             try:
-                # Check if we should be sending data
+                # Get battery status
                 battery_status = self.battery_manager.check_status()
-                if battery_status["returning_to_base"]:
-                    self.root.after(0, self.gui.update_connection_status, False)
-                    time.sleep(5)
-                    continue
                 
-                # Compute averages and get anomalies
-                avg_temp, avg_humidity = self.edge_processor.compute_averages()
-                anomalies = self.edge_processor.get_anomalies()
+                # Determine drone status
                 drone_status = "normal"
-
                 if battery_status["charging"]:
                     drone_status = "charging"
-
                 elif battery_status["returning_to_base"]:
                     drone_status = "returning_to_base"
-
                 
-                # Send data to server
+                # Always compute averages and get anomalies, even when returning to base
+                avg_temp, avg_humidity = self.edge_processor.compute_averages()
+                anomalies = self.edge_processor.get_anomalies()
+                
+                # Send data to server regardless of drone status
                 success = self.drone_client.send_to_server(
-                    avg_temp, avg_humidity, anomalies, battery_status["level"],status = drone_status
+                    avg_temp, avg_humidity, anomalies, battery_status["level"], status=drone_status
                 )
                 
                 # Update connection status in GUI
                 self.root.after(0, self.gui.update_connection_status, success)
                 
                 if success:
-                    self.log("Data sent to central server successfully")
+                    self.log(f"Data sent to central server successfully (Status: {drone_status})")
                 else:
                     self.log("Failed to send data to central server")
                 
