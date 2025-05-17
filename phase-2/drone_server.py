@@ -1131,7 +1131,7 @@ class DroneGUI:
         # Add formatted log entry
         log_entry = f"[{timestamp}] {message}\n"
         self.log_text.insert(tk.END, log_entry, tag)
-        self.log_text.see(tk.END)  # Auto-scroll to the latest log
+        
 
     # Add these helper methods to DroneGUI class
 
