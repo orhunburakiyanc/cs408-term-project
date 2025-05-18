@@ -18,8 +18,8 @@ DEFAULT_DRONE_PORT = 3400
 DEFAULT_CENTRAL_IP = "127.0.0.1"
 DEFAULT_CENTRAL_PORT = 3500
 DEFAULT_NUM_SENSORS = 5
-DEFAULT_DATA_INTERVAL = 1
-  # seconds between sensor readings
+DEFAULT_MIN_DATA_INTERVAL = 4
+DEFAULT_MAX_DATA_INTERVAL = 6
 
 # Global list to keep track of subprocesses
 processes = []
@@ -27,7 +27,7 @@ process_lock = threading.Lock()
 
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C to gracefully terminate all child processes"""
+    #Handle Ctrl+C to gracefully terminate all child processes
     print("\nShutting down all processes...")
     with process_lock:
         for process in processes:
@@ -57,7 +57,7 @@ def signal_handler(sig, frame):
 
 
 def launch_process(cmd, label):
-    """Generic function to launch a subprocess and track it"""
+    #Generic function to launch a subprocess and track it
     try:
         process = subprocess.Popen(cmd)
         with process_lock:
@@ -82,10 +82,9 @@ def start_drone_server(drone_ip, drone_port, server_ip, server_port):
            "--server-ip", server_ip, "--server-port", str(server_port)]
     return launch_process(cmd, "Drone server")
 
-
-def start_sensor_node(sensor_id, drone_ip, drone_port, interval):
+def start_sensor_node(sensor_id, drone_ip, drone_port, min_interval, max_interval):
     cmd = [sys.executable, "nodes.py", "--id", f"sensor_{sensor_id:02d}", "--ip", drone_ip,
-           "--port", str(drone_port), "--interval", str(interval)]
+           "--port", str(drone_port), "--min-interval", str(min_interval), "--max-interval", str(max_interval)]
     return launch_process(cmd, f"Sensor node {sensor_id:02d}")
 
 
@@ -98,14 +97,14 @@ def threaded_launcher(target, args=()):
 def main():
     parser = argparse.ArgumentParser(description='Start the environmental monitoring system')
 
-    parser.add_argument('--mode', choices=['all', 'central', 'drone', 'sensors'], default='all',
-                        help='Components to start: all, central server only, drone only, or sensors only')
+    parser.add_argument('--mode', choices=['all', 'central', 'drone', 'sensors'], default='all',help='Components to start: all, central server only, drone only, or sensors only')
     parser.add_argument('--central-ip', default=DEFAULT_CENTRAL_IP)
     parser.add_argument('--central-port', type=int, default=DEFAULT_CENTRAL_PORT)
     parser.add_argument('--drone-ip', default=DEFAULT_DRONE_IP)
     parser.add_argument('--drone-port', type=int, default=DEFAULT_DRONE_PORT)
     parser.add_argument('--num-sensors', type=int, default=DEFAULT_NUM_SENSORS)
-    parser.add_argument('--interval', type=int, default=DEFAULT_DATA_INTERVAL)
+    parser.add_argument('--min-interval', type=float, default=DEFAULT_MIN_DATA_INTERVAL, help='Minimum sensor data interval')
+    parser.add_argument('--max-interval', type=float, default=DEFAULT_MAX_DATA_INTERVAL, help='Maximum sensor data interval')
 
     args = parser.parse_args()
     signal.signal(signal.SIGINT, signal_handler)
@@ -124,8 +123,17 @@ def main():
 
     if args.mode in ['all', 'sensors']:
         for i in range(1, args.num_sensors + 1):
-            threads.append(threaded_launcher(start_sensor_node, (i, args.drone_ip, args.drone_port, args.interval)))
-            time.sleep(0.5)
+            if i <= 2:
+                min_iv, max_iv = 2, 3  # hızlı sensörler
+            else:
+                min_iv, max_iv = 5, 8  # yavaş sensörler
+
+            threads.append(threaded_launcher(
+                start_sensor_node,
+                (i, args.drone_ip, args.drone_port, min_iv, max_iv)
+            ))
+            time.sleep(1)
+
 
     print("\nAll requested components started. Press Ctrl+C to shut down.")
 

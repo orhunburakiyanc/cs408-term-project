@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Central server for the environmental monitoring system.
 Receives data from drones, displays it in real-time, and stores it for analysis."""
+from collections import defaultdict
 import socket
 import json
 import tkinter as tk
@@ -44,7 +45,7 @@ class ServerGUI:
         self.drone_statuses = {}  # Store latest status for each drone
         self.drone_data = []  # Store all data entries
         self.anomalies = []  # Store all anomalies
-        
+        self.last_anomaly_report = defaultdict(dict)  # Track last reported anomaly for each drone
         # Chart data storage
         self.chart_data = {
             "drone_ids": set(),
@@ -559,7 +560,7 @@ class ServerGUI:
         data_logs_frame.grid_rowconfigure(1, weight=0)
         
         # Create Treeview for data logs table
-        columns = ("timestamp", "drone_id", "temperature", "humidity", "battery", "status", "has_anomalies")
+        columns = ("timestamp", "drone_id", "temperature", "humidity", "battery", "status")
         self.data_logs_table = ttk.Treeview(data_logs_frame, columns=columns, show="headings", height=15)
         
         # Configure columns
@@ -569,7 +570,7 @@ class ServerGUI:
         self.data_logs_table.heading("humidity", text="Humidity (%)")
         self.data_logs_table.heading("battery", text="Battery (%)")
         self.data_logs_table.heading("status", text="Status")
-        self.data_logs_table.heading("has_anomalies", text="Anomalies")
+    
         
         # Set column widths and anchors
         self.data_logs_table.column("timestamp", width=150, anchor="center")
@@ -577,8 +578,7 @@ class ServerGUI:
         self.data_logs_table.column("temperature", width=100, anchor="center")
         self.data_logs_table.column("humidity", width=100, anchor="center")
         self.data_logs_table.column("battery", width=80, anchor="center")
-        self.data_logs_table.column("status", width=150, anchor="center")
-        self.data_logs_table.column("has_anomalies", width=80, anchor="center")
+        self.data_logs_table.column("status", width=150, anchor="center")        
         
         # Add scrollbars
         y_scrollbar = ttk.Scrollbar(data_logs_frame, orient="vertical", command=self.data_logs_table.yview)
@@ -724,28 +724,28 @@ class ServerGUI:
         # Update connection count
         self.connection_count.config(text=str(active_connection_count))
 
-    def add_data_entry(self, drone_data):        
+    def add_data_entry(self, drone_data):
         # Store data and update UI in a thread-safe way
         with self.update_lock:
             # Store data (up to 1000 entries)
             self.drone_data.append(drone_data)
             if len(self.drone_data) > 1000:
                 self.drone_data.pop(0)
-        
+
         # Extract drone identification
         drone_id = drone_data.get("drone_id", "unknown")
-        
+
         # Always log data reception
         self.log(f"Received data from {drone_id}", "info")
-        
+
         # Extract relevant data
         battery = drone_data.get("battery_level", 0)
         temperature = drone_data.get("average_temperature", 0)
         humidity = drone_data.get("average_humidity", 0)
-        
+
         # Get raw status from data
         raw_status = drone_data.get("status", "Connected")
-        
+
         # Check for special status values BEFORE standardizing format
         if raw_status.lower() == "returning_to_base" or raw_status.lower() == "returning to base":
             status = "Returning To Base"
@@ -757,47 +757,38 @@ class ServerGUI:
             if "_" in raw_status:
                 status = " ".join(word.capitalize() for word in raw_status.split("_"))
             else:
-                status = raw_status
-        
-        # Check for anomalies
-        anomalies = drone_data.get("anomalies", [])
-        has_anomalies = len(anomalies) > 0
-        
-        # Process anomalies if present
-        if has_anomalies and status not in ["Returning To Base", "Charging"]:
-            status = "Anomalies Detected"
-            self.add_anomalies(drone_id, anomalies)
-        
+                status = raw_status        
+
         # Handle low battery status (unless already in a special status)
-        if battery < 20 and status not in ["Returning To Base", "Charging", "Anomalies Detected"]:
+        if battery < 20 and status not in ["Returning To Base", "Charging"]:
             status = "Returning To Base"
             self.log(f"Drone {drone_id} is low on battery ({battery:.1f}%) - Returning to Base", "warning")
-        
+
         # Check for status change and log appropriately
         old_status = None
         if drone_id in self.drone_statuses:
             old_status = self.drone_statuses[drone_id].get("status")
-        
+
         # Now that we have the final status determination, update the drone status in memory
         self.update_drone_status(drone_id, status, battery, temperature, humidity)
-        
+
         # Only log status changes, not repeats
         if old_status is not None and old_status != status:
-            self.log(f"Drone {drone_id} status changed: {old_status} → {status}", 
-                    "warning" if status in ["Returning To Base", "Anomalies Detected"] else 
+            self.log(f"Drone {drone_id} status changed: {old_status} → {status}",
+                    "warning" if status in ["Returning To Base"] else
                     "success" if status == "Charging" else "info")
-        
-        # Update data logs table
-        self.root.after(0, self._update_data_logs, drone_data, status, has_anomalies)
-        
+
+        # Update data logs table                
+        self.root.after(0, self._update_data_logs, drone_data, status)
+
         # Update drone status display
         self.root.after(0, self._update_drone_display, drone_data, status)
-        
+
         # Add data to charts
         if status not in ["Charging", "Returning To Base"]:
             self.add_data_to_charts(drone_data)
 
-    def _update_data_logs(self, drone_data, status, has_anomalies):        
+    def _update_data_logs(self, drone_data, status):        
         # Extract data
         drone_id = drone_data.get("drone_id", "unknown")
         timestamp = drone_data.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -809,23 +800,22 @@ class ServerGUI:
         display_timestamp = timestamp.replace("T", " ").replace("Z", "")
         display_temp = f"{temperature:.1f}"
         display_humidity = f"{humidity:.1f}"
-        display_battery = f"{battery:.1f}"
-        display_anomalies = "Yes" if has_anomalies else "No"
+        display_battery = f"{battery:.1f}"        
         
         # Determine row tag based on status and conditions
-        tag = "normal"
-        if status == "Anomalies Detected":
-            tag = "anomaly"
-        elif status == "Returning To Base":
+        tag = "normal"        
+        if status == "Returning To Base":
             tag = "returning"
         elif status == "Charging":
             tag = "charging"
         elif battery < 20:
             tag = "low_battery"
+        elif status == "normal":
+            tag = "normal"
         
         # Insert into data logs table (newest at the top)
         values = (display_timestamp, drone_id, display_temp, display_humidity, 
-                  display_battery, status, display_anomalies)
+                  display_battery, status)
         self.data_logs_table.insert("", 0, values=values, tags=(tag,))
         
         # Limit visible logs (delete old ones if over 1000)
@@ -870,9 +860,9 @@ class ServerGUI:
         elif status == "Charging":
             tag = "charging"
         elif status == "Returning To Base":
-            tag = "returning"
-        elif status == "Anomalies Detected":
-            tag = "anomaly"
+            tag = "returning"        
+        elif status == "normal":
+            tag = "normal"
         
         # Update or insert into table
         values = (drone_id, display_timestamp, display_temp, display_humidity, display_battery, status)
@@ -881,60 +871,84 @@ class ServerGUI:
         else:
             self.drone_table.insert("", tk.END, values=values, tags=(tag,))
 
-    def add_anomalies(self, drone_id, anomalies):        
+    def add_anomalies(self, drone_id, anomalies):
+        """
+        Adds detected anomalies to the anomaly list and updates the GUI.
+        Logs the anomaly only if it's a new or changed anomaly value for a specific sensor/issue.
+        """
         if not anomalies:
             return
-        
-        # Store anomalies
-        with self.update_lock:
-            for anomaly in anomalies:
-                anomaly_entry = anomaly.copy()
-                anomaly_entry["drone_id"] = drone_id
-                self.anomalies.append(anomaly_entry)
-                
-                # Limit to 1000 entries
-                if len(self.anomalies) > 1000:
-                    self.anomalies.pop(0)
-        
-        # Schedule UI update
-        self.root.after(0, self._update_anomaly_display, drone_id, anomalies)
-        
-        # Log anomalies
-        for anomaly in anomalies:
-            issue = anomaly.get("issue", "unknown")
-            sensor_id = anomaly.get("sensor_id", "unknown")
-            value = anomaly.get("value", 0)
-            self.log(f"Anomaly detected on {drone_id}, sensor {sensor_id}: {issue} ({value})", "warning")
 
-    def _update_anomaly_display(self, drone_id, anomalies):        
-        # Process each anomaly
-        for anomaly in anomalies:
+        with self.update_lock:            
+            if drone_id not in self.last_anomaly_report:
+                self.last_anomaly_report[drone_id] = {}
+
+            for anomaly in anomalies:
+                sensor_id = anomaly.get("sensor_id")
+                issue = anomaly.get("issue")
+                value = anomaly.get("value")
+                
+
+
+        
+                anomaly_key = (sensor_id, issue)
+
+        
+        if anomaly_key not in self.last_anomaly_report[drone_id] or \
+            self.last_anomaly_report[drone_id][anomaly_key] != value:
+
+ 
+            anomaly_entry = anomaly.copy()
+            anomaly_entry["drone_id"] = drone_id
+ 
+
+            self.anomalies.append(anomaly_entry)
+
+ 
+            self.last_anomaly_report[drone_id][anomaly_key] = value
+
+            if len(self.anomalies) > 1000:
+                self.anomalies.pop(0)
+
+
+            
+            self.root.after(0, self._update_anomaly_display, [anomaly_entry])
+            
+            log_issue = anomaly.get("issue", "unknown")
+            log_sensor_id = anomaly.get("sensor_id", "unknown")
+            log_value = anomaly.get("value", "N/A")
+            self.log(f"Anomaly detected on {drone_id}, sensor {log_sensor_id}: {log_issue} ({log_value})", "warning")
+
+    def _update_anomaly_display(self, new_anomalies):
+        # Process each new anomaly
+        for anomaly in new_anomalies:
             # Extract data
+            drone_id = anomaly.get("drone_id", "unknown")
             sensor_id = anomaly.get("sensor_id", "unknown")
             issue = anomaly.get("issue", "unknown")
             value = anomaly.get("value", 0)
             timestamp = anomaly.get("timestamp", datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
-            
+
             # Format display values
             display_timestamp = timestamp.replace("T", " ").replace("Z", "")
             display_value = f"{value:.1f}" if isinstance(value, (float, int)) else str(value)
-            
+
             # Format issue text (convert snake_case to readable text)
             if "_" in issue:
                 display_issue = " ".join(word.capitalize() for word in issue.split("_"))
             else:
                 display_issue = issue.capitalize()
-            
+
             # Determine row tag based on issue type
             tag = "temperature" if "temp" in issue.lower() else \
                 "humidity" if "humid" in issue.lower() else \
                 "battery" if "battery" in issue.lower() else \
                 "connection"
-            
+
             # Insert into anomaly table (newest at the top)
             values = (drone_id, sensor_id, display_issue, display_value, display_timestamp)
             self.anomaly_table.insert("", 0, values=values, tags=(tag,))
-            
+
             # Limit visible anomalies (delete old ones if over 100)
             children = self.anomaly_table.get_children()
             if len(children) > 100:
@@ -1237,32 +1251,24 @@ class CentralServer:
         """Process data received from a drone and update the GUI"""
         drone_id = drone_data.get("drone_id")
         if not drone_id:
+            # Use self.gui.log as this is the server class logging
             self.gui.log("Received data without drone_id. Cannot process.", level='warning')
             return
-
-        # Log reception of data
+        
         self.gui.log(f"Processing data from drone {drone_id}")
 
-        # Add the raw data entry to the internal storage and data table
         self.gui.add_data_entry(drone_data)
 
         # Process anomalies if present
         anomalies = drone_data.get("anomalies")
         if anomalies and isinstance(anomalies, list):
-            self.gui.add_anomalies(drone_id, anomalies)
+            current_status = self.gui.drone_statuses.get(drone_id, {}).get("status")
 
-        # Update drone status in the GUI (this is also done in add_data_entry, but calling here ensures status is updated even if data entry fails)
-        status = "Connected" # Default status if data is received
-        if anomalies:
-             status = "Anomalies Detected" # Indicate anomalies in status
-
-        self.gui.update_drone_status(
-            drone_id,
-            status,
-            drone_data.get("battery_level", 0), # Default to 0 if missing
-            drone_data.get("average_temperature", 0), # Default to 0 if missing
-            drone_data.get("average_humidity", 0) # Default to 0 if missing
-        )
+            # 'Returning To Base' or 'Charging' states.
+            if current_status not in ["Returning To Base", "Charging"]:
+                # Call the add_anomalies method in ServerGUI to handle logging and UI updates                 
+                self.gui.add_anomalies(drone_id, anomalies)            
+                #self.gui.log(f"Skipping detailed anomaly processing for {drone_id} due to status: {current_status}", "info")    
 
 
     def _monitor_connections(self):

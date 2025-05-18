@@ -42,12 +42,12 @@ class EdgeProcessor:
             self.readings[sensor_id].append(sensor_data)
             
             # Keep only the last window_size readings
-            
-            
+            if len(self.readings[sensor_id]) > self.window_size:
+                self.readings[sensor_id] = self.readings[sensor_id][-self.window_size:]
             
             # Check for anomalies
             self._check_anomalies(sensor_data)
-    
+
     def _check_anomalies(self, sensor_data):
         """Check for anomalous readings and record them"""
         anomaly = None
@@ -82,12 +82,26 @@ class EdgeProcessor:
                 "issue": "humidity_too_low",
                 "value": sensor_data["humidity"],
                 "timestamp": sensor_data["timestamp"]
-            }
+            }            
         
-        # Add anomaly if found
+        # Add anomaly if found and not already present
         if anomaly:
-            self.anomalies.append(anomaly)
+            # Check if this exact anomaly already exists
+            anomaly_exists = False
+            for existing_anomaly in self.anomalies:
+                if (existing_anomaly["sensor_id"] == anomaly["sensor_id"] and
+                    existing_anomaly["issue"] == anomaly["issue"] and
+                    existing_anomaly["value"] == anomaly["value"] and
+                    existing_anomaly["timestamp"] == anomaly["timestamp"]):
+                    anomaly_exists = True
+                    break
             
+            if not anomaly_exists:
+                self.anomalies.append(anomaly)
+            
+            # Keep only recent anomalies (last 10 for example)
+            if len(self.anomalies) > 10:
+                self.anomalies = self.anomalies[-10:]        
     
     def compute_averages(self):
         """Compute average temperature and humidity across all sensors"""
@@ -287,7 +301,7 @@ class DroneClient:
             self.connected = False
             return False
     
-    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level,status = "normal"):
+    def send_to_server(self, avg_temp, avg_humidity, anomalies, battery_level,status):
         """Send processed data to the central server"""
         with self.lock:
             if not self.connected:
@@ -321,7 +335,7 @@ class DroneGUI:
         # Initialize with ttkbootstrap style
         self.root = root
         self.root.title("Drone Edge Computing Unit")
-        self.root.geometry("1000x800")
+        self.root.geometry("1200x840")
 
         self.count = 0
         
@@ -1591,7 +1605,7 @@ class DroneServer:
             if last_state["returning_to_base"]:
                 self.battery_manager.charge()
             else:
-                print(f"[DEBUG _manage_battery] Battery level: {self.battery_manager.level:.1f}%, CONSUME threshold: {self.battery_manager.threshold:.1f}%")
+                #print(f"[DEBUG _manage_battery] Battery level: {self.battery_manager.level:.1f}%, CONSUME threshold: {self.battery_manager.threshold:.1f}%")
                 returning = self.battery_manager.consume()
                 if returning:
                     self.log("Battery low! Drone returning to base.")
@@ -1646,10 +1660,12 @@ class DroneServer:
                     drone_status = "charging"
                 elif battery_status["returning_to_base"]:
                     drone_status = "returning_to_base"
-                
+                else:
+                    drone_status = "normal"
+
                 # Always compute averages and get anomalies, even when returning to base
                 avg_temp, avg_humidity = self.edge_processor.compute_averages()
-                anomalies = self.edge_processor.get_anomalies()
+                anomalies = self.edge_processor.get_anomalies()                
                 
                 # Send data to server
                 success = self.drone_client.send_to_server(
@@ -1665,6 +1681,7 @@ class DroneServer:
                     self.log("Failed to send data to central server")
                 
                 time.sleep(5)  # Send data every 5 seconds
+                drone_status = "normal"  # Reset status after sending
             
             except Exception as e:
                 self.log(f"Error communicating with server: {e}")
