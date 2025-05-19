@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib.dates as mdates
+from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 # Check if ttkbootstrap is available
 try:
@@ -152,7 +153,7 @@ class ServerGUI:
         self.setup_humidity_chart(humidity_tab)
 
     def setup_temperature_chart(self, parent):
-        """Set up the temperature chart"""
+        """Set up the temperature chart with pause/zoom functionality"""
         # Create frame for chart with padding
         if USING_BOOTSTRAP:
             chart_frame = ttk.Labelframe(parent, text="Temperature Over Time", padding=10, bootstyle="primary")
@@ -165,7 +166,7 @@ class ServerGUI:
         chart_frame.grid_columnconfigure(0, weight=1)
         chart_frame.grid_rowconfigure(0, weight=1)
         
-        # Create control frame for time range selection
+        # Create control frame for time range selection and controls
         control_frame = ttk.Frame(chart_frame)
         control_frame.grid(row=1, column=0, sticky="ew", pady=5)
         
@@ -176,6 +177,20 @@ class ServerGUI:
                                     values=["Last Hour", "Last 12 Hours", "Last 24 Hours", "All Data"])
         timerange_combo.pack(side="left", padx=5)
         
+        # Add pause/resume button
+        self.temp_paused = False
+        self.temp_pause_btn = ttk.Button(control_frame, text="Pause", 
+                                    command=self.toggle_temp_pause)
+        self.temp_pause_btn.pack(side="left", padx=10)
+        
+        # Add zoom controls
+        ttk.Button(control_frame, text="Zoom In", 
+                command=lambda: self.zoom_temp_chart(0.8)).pack(side="left", padx=2)
+        ttk.Button(control_frame, text="Zoom Out", 
+                command=lambda: self.zoom_temp_chart(1.25)).pack(side="left", padx=2)
+        ttk.Button(control_frame, text="Reset Zoom", 
+                command=self.reset_temp_zoom).pack(side="left", padx=2)
+        
         # Create matplotlib figure
         self.temp_figure = Figure(figsize=(6, 4), dpi=100)
         self.temp_plot = self.temp_figure.add_subplot(111)
@@ -184,16 +199,26 @@ class ServerGUI:
         self.temp_plot.set_ylabel("Temperature (°C)")
         self.temp_plot.grid(True)
         
-        # Create canvas
+        # Store original axis limits for zoom functionality
+        self.temp_original_xlim = None
+        self.temp_original_ylim = None
+        
+        # Create canvas with navigation toolbar
         self.temp_canvas = FigureCanvasTkAgg(self.temp_figure, master=chart_frame)
         self.temp_canvas_widget = self.temp_canvas.get_tk_widget()
         self.temp_canvas_widget.grid(row=0, column=0, sticky="nsew")
+        
+        # Add navigation toolbar for additional zoom/pan functionality
+        toolbar_frame = ttk.Frame(chart_frame)
+        toolbar_frame.grid(row=2, column=0, sticky="ew", pady=2)
+        self.temp_toolbar = NavigationToolbar2Tk(self.temp_canvas, toolbar_frame)
+        self.temp_toolbar.update()
         
         # Bind changes to auto-update
         self.temp_timerange_var.trace_add("write", lambda *args: self.update_temperature_chart())
 
     def setup_humidity_chart(self, parent):
-        """Set up the humidity chart"""
+        """Set up the humidity chart with pause/zoom functionality"""
         # Create frame for chart with padding
         if USING_BOOTSTRAP:
             chart_frame = ttk.Labelframe(parent, text="Humidity Over Time", padding=10, bootstyle="info")
@@ -206,7 +231,7 @@ class ServerGUI:
         chart_frame.grid_columnconfigure(0, weight=1)
         chart_frame.grid_rowconfigure(0, weight=1)
         
-        # Create control frame for time range selection
+        # Create control frame for time range selection and controls
         control_frame = ttk.Frame(chart_frame)
         control_frame.grid(row=1, column=0, sticky="ew", pady=5)
         
@@ -217,6 +242,20 @@ class ServerGUI:
                                     values=["Last Hour", "Last 12 Hours", "Last 24 Hours", "All Data"])
         timerange_combo.pack(side="left", padx=5)
         
+        # Add pause/resume button
+        self.humidity_paused = False
+        self.humidity_pause_btn = ttk.Button(control_frame, text="Pause", 
+                                        command=self.toggle_humidity_pause)
+        self.humidity_pause_btn.pack(side="left", padx=10)
+        
+        # Add zoom controls
+        ttk.Button(control_frame, text="Zoom In", 
+                command=lambda: self.zoom_humidity_chart(0.8)).pack(side="left", padx=2)
+        ttk.Button(control_frame, text="Zoom Out", 
+                command=lambda: self.zoom_humidity_chart(1.25)).pack(side="left", padx=2)
+        ttk.Button(control_frame, text="Reset Zoom", 
+                command=self.reset_humidity_zoom).pack(side="left", padx=2)
+        
         # Create matplotlib figure
         self.humidity_figure = Figure(figsize=(6, 4), dpi=100)
         self.humidity_plot = self.humidity_figure.add_subplot(111)
@@ -225,13 +264,107 @@ class ServerGUI:
         self.humidity_plot.set_ylabel("Humidity (%)")
         self.humidity_plot.grid(True)
         
-        # Create canvas
+        # Store original axis limits for zoom functionality
+        self.humidity_original_xlim = None
+        self.humidity_original_ylim = None
+        
+        # Create canvas with navigation toolbar
         self.humidity_canvas = FigureCanvasTkAgg(self.humidity_figure, master=chart_frame)  
         self.humidity_canvas_widget = self.humidity_canvas.get_tk_widget()
         self.humidity_canvas_widget.grid(row=0, column=0, sticky="nsew")
         
+        # Add navigation toolbar for additional zoom/pan functionality
+        toolbar_frame = ttk.Frame(chart_frame)
+        toolbar_frame.grid(row=2, column=0, sticky="ew", pady=2)
+        self.humidity_toolbar = NavigationToolbar2Tk(self.humidity_canvas, toolbar_frame)
+        self.humidity_toolbar.update()
+        
         # Bind changes to auto-update
         self.humidity_timerange_var.trace_add("write", lambda *args: self.update_humidity_chart())
+
+    # Pause/Resume functionality methods
+    def toggle_temp_pause(self):
+        """Toggle pause/resume for temperature chart"""
+        self.temp_paused = not self.temp_paused
+        self.temp_pause_btn.config(text="Resume" if self.temp_paused else "Pause")
+        
+        if self.temp_paused:
+            self.log("Temperature chart paused", "info")
+        else:
+            self.log("Temperature chart resumed", "info")
+            # Update chart immediately when resuming
+            self.update_temperature_chart()
+
+    def toggle_humidity_pause(self):
+        """Toggle pause/resume for humidity chart"""
+        self.humidity_paused = not self.humidity_paused
+        self.humidity_pause_btn.config(text="Resume" if self.humidity_paused else "Pause")
+        
+        if self.humidity_paused:
+            self.log("Humidity chart paused", "info")
+        else:
+            self.log("Humidity chart resumed", "info")
+            # Update chart immediately when resuming
+            self.update_humidity_chart()
+
+    # Zoom functionality methods
+    def zoom_temp_chart(self, factor):
+        """Zoom temperature chart by the given factor"""
+        xlim = self.temp_plot.get_xlim()
+        ylim = self.temp_plot.get_ylim()
+        
+        # Calculate center points
+        x_center = (xlim[0] + xlim[1]) / 2
+        y_center = (ylim[0] + ylim[1]) / 2
+        
+        # Calculate new ranges
+        x_range = (xlim[1] - xlim[0]) * factor / 2
+        y_range = (ylim[1] - ylim[0]) * factor / 2
+        
+        # Set new limits
+        self.temp_plot.set_xlim(x_center - x_range, x_center + x_range)
+        self.temp_plot.set_ylim(y_center - y_range, y_center + y_range)
+        
+        # Redraw canvas
+        self.temp_canvas.draw()
+
+    def zoom_humidity_chart(self, factor):
+        """Zoom humidity chart by the given factor"""
+        xlim = self.humidity_plot.get_xlim()
+        ylim = self.humidity_plot.get_ylim()
+        
+        # Calculate center points
+        x_center = (xlim[0] + xlim[1]) / 2
+        y_center = (ylim[0] + ylim[1]) / 2
+        
+        # Calculate new ranges
+        x_range = (xlim[1] - xlim[0]) * factor / 2
+        y_range = (ylim[1] - ylim[0]) * factor / 2
+        
+        # Set new limits
+        self.humidity_plot.set_xlim(x_center - x_range, x_center + x_range)
+        self.humidity_plot.set_ylim(y_center - y_range, y_center + y_range)
+        
+        # Redraw canvas
+        self.humidity_canvas.draw()
+
+    def reset_temp_zoom(self):
+        """Reset temperature chart zoom to show all data"""
+        if self.temp_original_xlim and self.temp_original_ylim:
+            self.temp_plot.set_xlim(self.temp_original_xlim)
+            self.temp_plot.set_ylim(self.temp_original_ylim)
+        else:
+            self.temp_plot.autoscale()
+        self.temp_canvas.draw()
+
+    def reset_humidity_zoom(self):
+        """Reset humidity chart zoom to show all data"""
+        if self.humidity_original_xlim and self.humidity_original_ylim:
+            self.humidity_plot.set_xlim(self.humidity_original_xlim)
+            self.humidity_plot.set_ylim(self.humidity_original_ylim)
+        else:
+            self.humidity_plot.autoscale()
+        self.humidity_canvas.draw()
 
     def filter_chart_data(self, timerange):
         """Filter chart data based on the selected time range"""
@@ -293,7 +426,11 @@ class ServerGUI:
         return result
 
     def update_temperature_chart(self):
-        """Update the temperature chart with current data"""
+        """Update the temperature chart with current data (respects pause state)"""
+        # Don't update if paused
+        if hasattr(self, 'temp_paused') and self.temp_paused:
+            return
+        
         # Clear the plot
         self.temp_plot.clear()
         
@@ -335,6 +472,11 @@ class ServerGUI:
         self.temp_plot.set_ylabel("Temperature (°C)")
         self.temp_plot.grid(True)
         
+        # Store original limits for zoom reset (only if not already stored)
+        if self.temp_original_xlim is None:
+            self.temp_original_xlim = self.temp_plot.get_xlim()
+            self.temp_original_ylim = self.temp_plot.get_ylim()
+        
         # Format date on x-axis
         self.temp_plot.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
         
@@ -350,7 +492,11 @@ class ServerGUI:
         self.temp_canvas.draw()
 
     def update_humidity_chart(self):
-        """Update the humidity chart with current data"""
+        """Update the humidity chart with current data (respects pause state)"""
+        # Don't update if paused
+        if hasattr(self, 'humidity_paused') and self.humidity_paused:
+            return
+        
         # Clear the plot
         self.humidity_plot.clear()
         
@@ -392,6 +538,11 @@ class ServerGUI:
         self.humidity_plot.set_ylabel("Humidity (%)")
         self.humidity_plot.grid(True)
         
+        # Store original limits for zoom reset (only if not already stored)
+        if self.humidity_original_xlim is None:
+            self.humidity_original_xlim = self.humidity_plot.get_xlim()
+            self.humidity_original_ylim = self.humidity_plot.get_ylim()
+        
         # Format date on x-axis
         self.humidity_plot.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
         
@@ -406,6 +557,7 @@ class ServerGUI:
         self.humidity_figure.tight_layout()
         self.humidity_canvas.draw()
 
+    # Modified add_data_to_charts method
     def add_data_to_charts(self, drone_data):
         """Add new data point to chart data storage"""
         with self.update_lock:
@@ -427,10 +579,11 @@ class ServerGUI:
                 self.chart_data["temperature"].pop(0)
                 self.chart_data["humidity"].pop(0)
         
-        # Update charts if needed
-        self.root.after(0, self.update_temperature_chart)
-        self.root.after(0, self.update_humidity_chart)
-
+        # Update charts if not paused
+        if not getattr(self, 'temp_paused', False):
+            self.root.after(0, self.update_temperature_chart)
+        if not getattr(self, 'humidity_paused', False):
+            self.root.after(0, self.update_humidity_chart)
     def setup_drone_status_panel(self, parent):        
         # Create frame with label and padding
         if USING_BOOTSTRAP:
