@@ -4,19 +4,13 @@ import copy
 import json
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, scrolledtext
 import datetime
-
+import random
 from queue import Queue, Full
-
-from tkinter import messagebox
-from tkinter import filedialog
-
 import ttkbootstrap as ttk
-from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.constants import *
-
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -152,6 +146,7 @@ class EdgeProcessor:
         """Return a copy of the current readings"""
         with self.lock:
             return {k: v.copy() for k, v in self.readings.items()}
+
 
 class BatteryManager:
     """Simulates and manages drone battery level"""
@@ -300,6 +295,8 @@ class BatteryManager:
                  # but good to have a safeguard.
                  print(f"[BATTERY] Attempted to set invalid threshold: {new_threshold}. Must be between 5 and 50.")
 
+
+
 class DroneClient:
     """Client to send processed data to the central server"""
     
@@ -360,7 +357,7 @@ class DroneGUI:
 
         self.count = 0
 
-        self.drone_server = None
+        self.drone_server = None  # Initialize as None
             
         
         # Create tabbed interface with modified style
@@ -408,6 +405,8 @@ class DroneGUI:
         
         # Alert banner for battery status
         self._setup_alert_banner()
+
+    # In your DroneGUI class:
 
     def set_drone_server(self, drone_server):
         """Set the reference to the DroneServer instance"""
@@ -592,38 +591,13 @@ class DroneGUI:
         table_frame = ttk.Frame(self.data_tab)
         table_frame.pack(padx=10, pady=10, fill="both", expand=True)
         
-        # Create header frame for title and controls
-        header_frame = ttk.Frame(table_frame)
-        header_frame.pack(fill="x", pady=(0, 10))
-        
         # Add heading for data table
-        header_label = ttk.Label(header_frame, text="Sensor Data Stream", font=("Helvetica", 12, "bold"))
-        header_label.pack(side="left", anchor="w")
+        header_label = ttk.Label(table_frame, text="Sensor Data Stream", font=("Helvetica", 12, "bold"))
+        header_label.pack(anchor="w", pady=(0, 10))
         
-        # Add controls frame for export functionality
-        controls_frame = ttk.Frame(header_frame)
-        controls_frame.pack(side="right")
-        
-        # Export button
-        export_btn = ttk.Button(controls_frame, text="Export as JSON", 
-                            command=self.export_sensor_data_json,
-                            bootstyle="success-outline")
-        export_btn.pack(side="right", padx=(5, 0))
-        
-        # Clear data button
-        clear_btn = ttk.Button(controls_frame, text="Clear Data", 
-                            command=self.clear_sensor_data,
-                            bootstyle="danger-outline")
-        clear_btn.pack(side="right", padx=(5, 0))
-        
-        # Data count label
-        self.data_count_label = ttk.Label(controls_frame, text="Records: 0", 
-                                        font=("Helvetica", 9))
-        self.data_count_label.pack(side="right", padx=(0, 10))
-        
-        # Create Treeview for sensor data with bootstyle
+        # Create Treeview for sensor data with bootsyle
         self.data_tree = ttk.Treeview(table_frame, columns=("Sensor ID", "Temperature", "Humidity", "Timestamp"), 
-                                    bootstyle="info")
+                                     bootstyle="info")
         self.data_tree.heading("#0", text="Index")
         self.data_tree.heading("Sensor ID", text="Sensor ID")
         self.data_tree.heading("Temperature", text="Temperature")
@@ -641,9 +615,7 @@ class DroneGUI:
         self.data_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.data_tree.pack(fill="both", expand=True)
-        
-        # Initialize storage for all sensor data
-        self.all_sensor_data = []
+
         controls_frame = ttk.Frame(table_frame)
         controls_frame.pack(fill="x", pady=(10, 0)) # Add some padding
 
@@ -651,7 +623,7 @@ class DroneGUI:
                                                command=self._on_toggle_data_stream_clicked,
                                                bootstyle="warning")
         self.toggle_stream_button.pack(side="left", padx=5)
-
+    
     def _setup_charts_tab(self):
         # Create a frame for graphs
         graph_frame = ttk.Frame(self.charts_tab)
@@ -938,33 +910,22 @@ class DroneGUI:
         self.count += 1
         index = self.count
         
-        # Store the complete sensor data for export
-        self.all_sensor_data.append({
-            "index": index,
-            "sensor_id": sensor_data["sensor_id"],
-            "temperature": sensor_data["temperature"],
-            "humidity": sensor_data["humidity"],
-            "timestamp": sensor_data["timestamp"],
-            "recorded_at": datetime.datetime.now().isoformat()  # When it was recorded by the GUI
-        })
-        
-        # Insert new data into the tree view
+        # Insert new data
         self.data_tree.insert("", "end", text=str(index), 
-                            values=(sensor_data["sensor_id"], 
-                                    f"{sensor_data['temperature']:.2f}°C",
-                                    f"{sensor_data['humidity']:.2f}%",
-                                    sensor_data["timestamp"]))
+                              values=(sensor_data["sensor_id"], 
+                                     f"{sensor_data['temperature']:.2f}°C",
+                                     f"{sensor_data['humidity']:.2f}%",
+                                     sensor_data["timestamp"]))
         
-        # Keep only the last 100 entries in the tree view
+        # Keep only the last 100 entries
         if index > 100:
             self.data_tree.delete(self.data_tree.get_children()[0])
         
-        # Update data count label
-        self.data_count_label.config(text=f"Records: {len(self.all_sensor_data)}")
+       
         
-        # Update plot data (existing code)
+        # Update plot data
         current_time = datetime.datetime.strptime(sensor_data["timestamp"], 
-                                                "%Y-%m-%dT%H:%M:%SZ").strftime("%H:%M:%S")
+                                                 "%Y-%m-%dT%H:%M:%SZ").strftime("%H:%M:%S")
         self.timestamps.append(current_time)
         self.temps.append(sensor_data["temperature"])
         self.humids.append(sensor_data["humidity"])
@@ -978,174 +939,6 @@ class DroneGUI:
         # Update the plot
         self._update_plot()
     
-    def export_sensor_data_json(self):
-        """Export all sensor data to a JSON file"""
-        if not self.all_sensor_data:
-            messagebox.showwarning("No Data", "No sensor data available to export.")
-            return
-        
-        # Prepare data for export with metadata
-        export_data = {
-            "metadata": {
-                "export_time": datetime.datetime.now().isoformat(),
-                "total_records": len(self.all_sensor_data),
-                "time_range": {
-                    "first_record": self.all_sensor_data[0]["timestamp"] if self.all_sensor_data else None,
-                    "last_record": self.all_sensor_data[-1]["timestamp"] if self.all_sensor_data else None
-                },
-                "sensors": list(set(record["sensor_id"] for record in self.all_sensor_data))
-            },
-            "sensor_data": self.all_sensor_data
-        }
-        
-        # Generate default filename with timestamp
-        default_filename = f"sensor_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        # Ask user for file location
-        try:
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".json",
-                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-                initialfile=default_filename,
-                title="Save Sensor Data"
-            )
-            
-            if file_path:
-                # Write data to file
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(export_data, f, indent=2, ensure_ascii=False)
-                
-                # Log success
-                self.log_panel(f"SUCCESS: Sensor data exported to {file_path}")
-                
-                # Modern ttkbootstrap message
-                Messagebox.show_info(
-                    title="Export Successful",
-                    message=f"Sensor data successfully exported to:\n{file_path}\n\nRecords exported: {len(self.all_sensor_data)}",
-                    parent=self.root
-                )
-        
-        except Exception as e:
-            error_msg = f"ERROR: Failed to export sensor data: {str(e)}"
-            self.log_panel(error_msg)
-            messagebox.showerror("Export Failed", f"Failed to export data:\n{str(e)}")
-
-    def clear_sensor_data(self):
-        """Clear all sensor data from the table and storage"""
-        # Ask for confirmation
-        result = messagebox.askyesno("Clear Data", 
-                                    "Are you sure you want to clear all sensor data?\n"
-                                    "This action cannot be undone.")
-        
-        if result:
-            # Clear the tree view
-            for item in self.data_tree.get_children():
-                self.data_tree.delete(item)
-            
-            # Clear stored data
-            self.all_sensor_data.clear()
-            
-            # Reset counter
-            self.count = 0
-            
-            # Update data count label
-            self.data_count_label.config(text="Records: 0")
-            
-            # Clear plot data
-            self.timestamps.clear()
-            self.temps.clear()
-            self.humids.clear()
-            
-            # Update the plot
-            self._update_plot()
-            
-            # Log the action
-            self.log_panel("SUCCESS: All sensor data cleared")
-            messagebox.showinfo("Data Cleared", "All sensor data has been cleared successfully.")
-
-    def get_sensor_data_summary(self):
-        """Get a summary of the sensor data for display or export"""
-        if not self.all_sensor_data:
-            return None
-        
-        # Calculate statistics
-        sensors = {}
-        for record in self.all_sensor_data:
-            sensor_id = record["sensor_id"]
-            if sensor_id not in sensors:
-                sensors[sensor_id] = {
-                    "count": 0,
-                    "temperatures": [],
-                    "humidities": []
-                }
-            
-            sensors[sensor_id]["count"] += 1
-            sensors[sensor_id]["temperatures"].append(record["temperature"])
-            sensors[sensor_id]["humidities"].append(record["humidity"])
-        
-        # Generate summary
-        summary = {
-            "total_records": len(self.all_sensor_data),
-            "unique_sensors": len(sensors),
-            "time_range": {
-                "start": self.all_sensor_data[0]["timestamp"],
-                "end": self.all_sensor_data[-1]["timestamp"]
-            },
-            "sensor_statistics": {}
-        }
-        
-        for sensor_id, data in sensors.items():
-            temps = data["temperatures"]
-            humids = data["humidities"]
-            
-            summary["sensor_statistics"][sensor_id] = {
-                "record_count": data["count"],
-                "temperature": {
-                    "min": min(temps),
-                    "max": max(temps),
-                    "avg": sum(temps) / len(temps)
-                },
-                "humidity": {
-                    "min": min(humids),
-                    "max": max(humids),
-                    "avg": sum(humids) / len(humids)
-                }
-            }
-        
-        return summary
-
-    def export_sensor_data_summary(self):
-        """Export a summary of sensor data as JSON"""
-        summary = self.get_sensor_data_summary()
-        
-        if not summary:
-            messagebox.showwarning("No Data", "No sensor data available for summary.")
-            return
-        
-        # Generate default filename
-        default_filename = f"sensor_summary_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        try:
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".json",
-                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-                initialfile=default_filename,
-                title="Save Sensor Data Summary"
-            )
-            
-            if file_path:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(summary, f, indent=2, ensure_ascii=False)
-                
-                self.log_panel(f"SUCCESS: Sensor data summary exported to {file_path}")
-                messagebox.showinfo("Export Successful", 
-                                f"Sensor data summary exported to:\n{file_path}")
-        
-        except Exception as e:
-            error_msg = f"ERROR: Failed to export summary: {str(e)}"
-            self.log_panel(error_msg)
-            messagebox.showerror("Export Failed", f"Failed to export summary:\n{str(e)}")
-
     def _update_plot(self):
         """Update the temperature and humidity plots with improved formatting"""
         if not self.timestamps:
@@ -1192,6 +985,7 @@ class DroneGUI:
                                            f"{anomaly['value']:.2f}",
                                            anomaly["timestamp"]))
             
+    
     def display_battery(self, battery_status):
         """Update the battery display"""
         level = battery_status["level"]
