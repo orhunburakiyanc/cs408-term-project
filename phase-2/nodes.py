@@ -13,7 +13,7 @@ class SensorNode:
     """
 
     def __init__(self, sensor_id, drone_ip, drone_port,
-                 failure_probability=0.05, repair_time=5, min_interval=1, max_interval=2):
+                 failure_probability=0.005, repair_time=5, min_interval=1, max_interval=2):
         """
         Initialize the SensorNode with configuration parameters.
 
@@ -264,7 +264,7 @@ def main():
     parser.add_argument('--id', type=str, default='sensor_01', help='Sensor ID')
     parser.add_argument('--ip', type=str, default='127.0.0.1', help='Drone IP address')
     parser.add_argument('--port', type=int, default=3400, help='Drone port')    
-    parser.add_argument('--failure-rate', type=float, default=0.05,
+    parser.add_argument('--failure-rate', type=float, default=0.005,
                         help='Probability of failure per cycle (0-1)')
     parser.add_argument('--repair-time', type=int, default=5,
                         help='Fixed repair time in seconds')

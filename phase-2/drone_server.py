@@ -1,6 +1,5 @@
 import socket
 import threading
-import copy
 import json
 import time
 import tkinter as tk
@@ -22,7 +21,6 @@ class EdgeProcessor:
     def __init__(self, window_size=10, temp_threshold_high=30.0, temp_threshold_low=10.0,
                  humidity_threshold_high=80.0, humidity_threshold_low=20.0):
         self.readings = {}  # Dictionary to store readings by sensor_id
-        self.previous_readings = {}  # Dictionary to store previous readings by sensor_id
         self.window_size = window_size  # Number of readings to keep for each sensor
         self.temp_threshold_high = temp_threshold_high
         self.temp_threshold_low = temp_threshold_low
@@ -43,7 +41,9 @@ class EdgeProcessor:
             # Add new reading
             self.readings[sensor_id].append(sensor_data)
             
-            
+            # Keep only the last window_size readings
+            if len(self.readings[sensor_id]) > self.window_size:
+                self.readings[sensor_id] = self.readings[sensor_id][-self.window_size:]
             
             # Check for anomalies
             self._check_anomalies(sensor_data)
@@ -104,37 +104,19 @@ class EdgeProcessor:
                 self.anomalies = self.anomalies[-10:]        
     
     def compute_averages(self):
-        """
-        Calculates the average temperature and humidity of new readings added since the previous call.
-
-        Returns:
-            tuple: (avg_temp, avg_humidity)
-        """
+        """Compute average temperature and humidity across all sensors"""
         with self.lock:
-            new_temps = []
-            new_humidities = []
-
+            all_temps = []
+            all_humidities = []
             
-            for sensor_id, current_readings_list in self.readings.items():
-                
-                previous_readings_list = self.previous_readings.get(sensor_id, [])
-
-                
-                start_index_for_new = len(previous_readings_list)
-
-                
-                for i in range(start_index_for_new, len(current_readings_list)):
-                    new_reading = current_readings_list[i]
-                    new_temps.append(new_reading["temperature"])
-                    new_humidities.append(new_reading["humidity"])
-
+            for sensor_id, readings in self.readings.items():
+                for reading in readings:
+                    all_temps.append(reading["temperature"])
+                    all_humidities.append(reading["humidity"])
             
-            avg_temp = sum(new_temps) / len(new_temps) if new_temps else 0
-            avg_humidity = sum(new_humidities) / len(new_humidities) if new_humidities else 0
-
+            avg_temp = sum(all_temps) / len(all_temps) if all_temps else 0
+            avg_humidity = sum(all_humidities) / len(all_humidities) if all_humidities else 0
             
-            self.previous_readings = copy.deepcopy(self.readings)
-
             return avg_temp, avg_humidity
     
     def get_anomalies(self):
