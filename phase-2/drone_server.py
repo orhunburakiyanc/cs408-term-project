@@ -356,9 +356,7 @@ class DroneGUI:
         self.root.geometry("1200x840")
 
         self.count = 0
-
-        self.drone_server = None  # Initialize as None
-            
+        
         
         # Create tabbed interface with modified style
         self.tab_control = ttk.Notebook(root)
@@ -407,10 +405,6 @@ class DroneGUI:
         self._setup_alert_banner()
 
     # In your DroneGUI class:
-
-    def set_drone_server(self, drone_server):
-        """Set the reference to the DroneServer instance"""
-        self.drone_server = drone_server
 
     def apply_threshold(self):
         """Reads threshold from spinbox, validates, and updates BatteryManager."""
@@ -482,7 +476,8 @@ class DroneGUI:
     
     # Right panel - Node details and actions
         right_frame = ttk.Frame(paned)
-       
+        right_frame.pack(fill="both", expand=True)
+        paned.add(right_frame, weight=2)
     
     # Node details section
         details_frame = ttk.LabelFrame(right_frame, text="Node Details", bootstyle="primary")
@@ -558,26 +553,10 @@ class DroneGUI:
         row=2, column=0, sticky="w", padx=5, pady=5)
         self.latest_time_value = ttk.Label(latest_grid, text="N/A", font=("Helvetica", 10))
         self.latest_time_value.grid(row=2, column=1, sticky="w", padx=5, pady=5)
-
-
-
-        actions_frame = ttk.LabelFrame(right_frame, text="Node Actions", bootstyle="info")
-        actions_frame.pack(fill="x", padx=5, pady=(10,5)) # Add some padding
-
-        self.disconnect_node_button = ttk.Button(actions_frame, text="Disconnect Selected Node",
-                                                 command=self._on_disconnect_node_clicked,
-                                                 state="disabled", bootstyle="danger")
-        self.disconnect_node_button.pack(pady=5, padx=5, fill="x")
-
-        # Add right_frame to paned window (make sure this is done correctly)
-        paned.add(right_frame, weight=2) # Should be okay here or after right_frame is fully populated.
-
-        # Bind treeview selection event (your existing code)
-        self.nodes_tree.bind("<<TreeviewSelect>>", self.on_node_selected)
         
     
     # Bind treeview selection event
-        
+        self.nodes_tree.bind("<<TreeviewSelect>>", self.on_node_selected)
     
     # Initialize node data storage
         self.node_data = {}  # Dictionary to store node data and statistics
@@ -615,14 +594,6 @@ class DroneGUI:
         self.data_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.data_tree.pack(fill="both", expand=True)
-
-        controls_frame = ttk.Frame(table_frame)
-        controls_frame.pack(fill="x", pady=(10, 0)) # Add some padding
-
-        self.toggle_stream_button = ttk.Button(controls_frame, text="Pause Data Stream",
-                                               command=self._on_toggle_data_stream_clicked,
-                                               bootstyle="warning")
-        self.toggle_stream_button.pack(side="left", padx=5)
     
     def _setup_charts_tab(self):
         # Create a frame for graphs
@@ -1201,64 +1172,19 @@ class DroneGUI:
         self.connection_manager = connection_manager
         self.edge_processor = edge_processor
 
-
-
-    def _on_toggle_data_stream_clicked(self):
-        """Handles the Pause/Resume Data Stream button click."""
-        if self.drone_server:
-            is_active = self.drone_server.toggle_data_stream()
-            if is_active:
-                self.toggle_stream_button.config(text="Pause Data Stream", bootstyle="warning")
-                self.log_panel("INFO: Data stream resumed.")
-            else:
-                self.toggle_stream_button.config(text="Resume Data Stream", bootstyle="success")
-                self.log_panel("INFO: Data stream paused.")
-        else:
-            self.log_panel("ERROR: Drone server instance not available.")
-
-
-
-
-    def _on_disconnect_node_clicked(self):
-        """Handles the Disconnect Node button click."""
-        selection = self.nodes_tree.selection()
-        if not selection:
-            self.log_panel("WARNING: No node selected to disconnect.")
-            return
-
-        node_id = self.nodes_tree.item(selection[0], "text") # Get ID from first column
-
-        if self.connection_manager:
-            self.log_panel(f"INFO: Attempting to disconnect node: {node_id}")
-            success = self.connection_manager.disconnect_node(node_id)
-            if success:
-                self.log_panel(f"SUCCESS: Disconnection command sent to node {node_id}.")
-                # Optionally remove from local data cache if you maintain one that mirrors connections
-                if node_id in self.node_data:
-                    del self.node_data[node_id]
-                self.clear_node_selection() # Clear details panel and disable button
-                self.update_nodes()         # Refresh the tree view
-            else:
-                self.log_panel(f"ERROR: Failed to disconnect node {node_id}. It might be already disconnected or not found.")
-        else:
-            self.log_panel("ERROR: Connection manager not available for node disconnection.")
-        
-        # Ensure button is disabled after action attempt
-        self.disconnect_node_button.config(state="disabled")
-
     def on_node_selected(self, event):
         """Handle node selection in the treeview"""
         selection = self.nodes_tree.selection()
         if selection:
-            node_id = self.nodes_tree.item(selection[0], "text") # Get ID from first column
+        
+        # Get selected node ID
+            node_id = self.nodes_tree.item(selection[0], "text")
+        
+        # Update details panel
             self.update_node_details(node_id)
-            # --- MODIFIED: Enable disconnect button ---
-            if self.connection_manager: # Only enable if manager is available
-                 self.disconnect_node_button.config(state="normal")
-            else:
-                 self.disconnect_node_button.config(state="disabled")
         else:
-            self.clear_node_selection()
+            
+           self.clear_node_selection()
 
     def update_node_details(self, node_id):
         """Update the node details panel for selected node"""
@@ -1409,12 +1335,10 @@ class DroneGUI:
         self.log_panel("SUCCESS: Refreshed nodes list")
 
     def clear_node_selection(self):
-        """Clear the selected node and reset details panel."""
-        current_selection = self.nodes_tree.selection()
-        if current_selection: # Check if there's a selection to remove
-            self.nodes_tree.selection_remove(current_selection)
-        
-        # Reset detail fields
+        """Clear the selected node"""
+        self.nodes_tree.selection_remove(self.nodes_tree.selection())
+    
+    # Reset detail fields
         self.node_id_value.config(text="Select a node")
         self.node_status_value.config(text="N/A")
         self.node_lastseen_value.config(text="N/A")
@@ -1422,14 +1346,9 @@ class DroneGUI:
         self.node_temprange_value.config(text="N/A")
         self.node_humidrange_value.config(text="N/A")
         self.node_anomalies_value.config(text="N/A")
-        
-        self.latest_temp_value.config(text="N/A", bootstyle="default") # Reset style
-        self.latest_humid_value.config(text="N/A", bootstyle="default") # Reset style
+        self.latest_temp_value.config(text="N/A")
+        self.latest_humid_value.config(text="N/A")
         self.latest_time_value.config(text="N/A")
-
-        # --- MODIFIED: Disable disconnect button ---
-        if hasattr(self, 'disconnect_node_button'): # Check if button exists
-            self.disconnect_node_button.config(state="disabled")
     
     
 
@@ -1442,17 +1361,13 @@ class DroneServer:
                  server_ip="127.0.0.1", server_port=3500,
                  drone_id="drone_alpha"):
         
-
-        
-        
         # Initialize components
         self.root = tk.Tk()
         
-        self.data_stream_active = True
+        
         self.edge_processor = EdgeProcessor()
         self.battery_manager = BatteryManager()
         self.gui = DroneGUI(self.root,self.battery_manager)
-        self.gui.set_drone_server(self)
         self.drone_client = DroneClient(server_ip, server_port, drone_id)
         
         # Server settings
@@ -1484,14 +1399,6 @@ class DroneServer:
         self.battery_thread = threading.Thread(target=self._manage_battery)
         self.server_comm_thread = threading.Thread(target=self._communicate_with_server)
         self.nodes_update_thread = threading.Thread(target=self._update_nodes_status)
-
-
-    def toggle_data_stream(self):
-        """Toggles the data stream processing on or off."""
-        self.data_stream_active = not self.data_stream_active
-        status = "resumed" if self.data_stream_active else "paused"
-        self.log(f"Data stream has been {status} by GUI request.")
-        return self.data_stream_active
 
     def _update_nodes_status(self):
         """Thread to periodically update node status information"""
@@ -1648,16 +1555,8 @@ class DroneServer:
                         if current_sensor_id and (not sensor_id or sensor_id != current_sensor_id):
                             sensor_id = current_sensor_id
                             self.connection_manager.register_node(sensor_id, addr)
-
-
-                        if not self.data_stream_active:
-                        # Optional: Uncomment if you want verbose logging of skipped data
-                            self.log(f"Data stream paused. Ignoring data from sensor {sensor_id or 'Unknown'}")
-                            continue  # S
                     
                         self.log(f"Received data from sensor {sensor_id}")
-
-                        
                         
                         # Add to processing queue
                         try:
